@@ -1,0 +1,4 @@
+node_modules/
+dist/
+data/peers.json
+.DS_Store
