@@ -9,7 +9,7 @@ export const DEFAULT_BOOTSTRAP_PEERS = [
 const DEFAULT_PORT = 18018;
 const DEFAULT_HOST = "0.0.0.0";
 const DEFAULT_VERSION = "0.10.0";
-const DEFAULT_AGENT = "Marabu-Minimal-TS/0.10.0";
+const DEFAULT_AGENT = "Siesto/0.10.0";
 const DEFAULT_RECONNECT_INTERVAL_MS = 30_000;
 
 export interface NodeConfig {
