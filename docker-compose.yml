@@ -1,6 +1,8 @@
 services:
   node:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     container_name: marabu-node
     env_file: .env
     environment:
