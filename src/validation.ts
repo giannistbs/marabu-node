@@ -178,7 +178,7 @@ export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress>
 
     const host = ipv6Match[1];
     const portText = ipv6Match[2];
-    if (host === undefined || portText === undefined) {
+    if (host === undefined || portText === undefined || /^127/.test(host) || host === "::1") {
       throw new Error("Invalid bracketed IPv6 peer address");
     }
 
