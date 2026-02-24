@@ -5,6 +5,7 @@ import type {
   HelloMessage,
   PeersMessage
 } from "./types.js";
+import dns from "node:dns/promises";
 
 const HELLO_VERSION_PATTERN = /^0\.10\.\d+$/;
 
@@ -167,7 +168,7 @@ export interface ParsedPeerAddress {
 }
 
 // Parses a peer string into structured host and port values.
-export function parsePeerAddress(peer: string): ParsedPeerAddress {
+export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress> {
   // Support bracketed IPv6 format: [host]:port.
   if (peer.startsWith("[")) {
     const ipv6Match = /^\[([^\]\s]+)\]:(\d{1,5})$/.exec(peer);
@@ -195,9 +196,16 @@ export function parsePeerAddress(peer: string): ParsedPeerAddress {
 
   const host = hostMatch[1];
   const portText = hostMatch[2];
-  if (host === undefined || portText === undefined) {
+  if (host === undefined || portText === undefined || /^127/.test(host) || host === "::1") {
     throw new Error("Invalid peer address");
   }
+
+  const validIp = await validateHost(host)
+
+  if (!validIp) {
+    throw new Error("Invalid peer address")
+  }
+  
 
   return {
     host,
@@ -205,12 +213,16 @@ export function parsePeerAddress(peer: string): ParsedPeerAddress {
   };
 }
 
-// Checks whether a peer address parses successfully.
-export function isValidPeerAddress(peer: string): boolean {
+async function validateHost(host: string): Promise<boolean> {
   try {
-    parsePeerAddress(peer);
-    return true;
+    await dns.lookup(host); // works for both IPs and hostnames
+    return true
   } catch {
-    return false;
+    return false
   }
+}
+
+// Checks whether a peer address parses successfully.
+export async function isValidPeerAddress(peer: string): Promise<boolean> {
+  return await parsePeerAddress(peer).then(() => true).catch(() => false);
 }

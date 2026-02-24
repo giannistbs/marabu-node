@@ -3,7 +3,7 @@ import { encodeMessage, decodeLine } from "./codec.js";
 import type { NodeConfig } from "./config.js";
 import { PeerStore } from "./peerStore.js";
 import type { AnyMessage, ErrorMessage } from "./types.js";
-import { MessageValidationError, parsePeerAddress } from "./validation.js";
+import { MessageValidationError, parsePeerAddress, isValidPeerAddress } from "./validation.js";
 
 interface ConnectionState {
   id: number;
@@ -296,7 +296,7 @@ export class MarabuNode {
 
   // Encodes and writes a protocol message unless the socket is already closed.
   private sendMessage(socket: net.Socket, message: AnyMessage): void {
-    if (socket.destroyed) {
+    if (socket.destroyed || socket.writableEnded) {
       return;
     }
 
@@ -310,7 +310,7 @@ export class MarabuNode {
 
   // Sends an error payload and closes the socket in a single operation.
   private sendErrorAndClose(socket: net.Socket, errorMessage: ErrorMessage): void {
-    if (socket.destroyed) {
+    if (socket.destroyed || socket.writableEnded) {
       return;
     }
 
@@ -340,7 +340,7 @@ export class MarabuNode {
   }
 
   // Dials a peer and wires timeout/error/connect handlers for lifecycle tracking.
-  private connectToPeer(peer: string): void {
+  private async connectToPeer(peer: string): Promise<void> {
 
     let parsed: {
       host: string;
@@ -348,10 +348,14 @@ export class MarabuNode {
     };
 
     try {
-      // Validate address format before initiating the outbound socket.
-      parsed = parsePeerAddress(peer);
-    } catch {
-      console.warn(`[outbound ${peer}] invalid address`);
+      if (!await isValidPeerAddress(peer)) {
+        console.warn(`[outbound ${peer}] invalid address`);
+        return;
+      }
+
+      parsed = await parsePeerAddress(peer);
+    } catch (err) {
+      console.warn(`[outbound ${peer}] failed to parse address: ${(err as Error).message}`);
       return;
     }
 
