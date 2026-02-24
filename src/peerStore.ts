@@ -40,7 +40,7 @@ export class PeerStore {
       const content = await readFile(this.filePath, "utf8");
       const parsed = JSON.parse(content) as unknown;
       const loadedPeers = this.extractPeers(parsed);
-      if (this.addPeers(loadedPeers)) {
+      if (await this.addPeers(loadedPeers)) {
         shouldPersist = true;
       }
     } catch (error) {
@@ -55,7 +55,7 @@ export class PeerStore {
     }
 
     // Seed from bootstrap peers when enabled.
-    if (this.includeBootstrap && this.addPeers(this.bootstrapPeers)) {
+    if (this.includeBootstrap && await this.addPeers(this.bootstrapPeers)) {
       shouldPersist = true;
     }
 
@@ -74,7 +74,7 @@ export class PeerStore {
 
   // Merges new peers into the in-memory set and persists only on changes.
   async mergeAndPersist(peers: string[]): Promise<boolean> {
-    const changed = this.addPeers(peers);
+    const changed = await this.addPeers(peers);
     if (changed) {
       await this.save();
     }
@@ -83,12 +83,12 @@ export class PeerStore {
   }
 
   // Adds valid peers while filtering invalid entries and duplicates.
-  private addPeers(peers: string[]): boolean {
+  private async addPeers(peers: string[]): Promise<boolean> {
     let changed = false;
 
     for (const peer of peers) {
       // Skip invalid addresses instead of poisoning the store.
-      if (!isValidPeerAddress(peer)) {
+      if (!await isValidPeerAddress(peer)) {
         continue;
       }
 

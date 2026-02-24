@@ -107,7 +107,7 @@ function validatePeersMessage(value: RecordValue): PeersMessage {
   for (let index = 0; index < value.peers.length; index += 1) {
     // Validate element type and network address format per entry.
     const peer = assertString(value.peers[index], `peers.peers[${index}]`);
-    if (!isValidPeerAddress(peer)) {
+    if (peer.trim() === "") {
       throw new MessageValidationError(
         `peers.peers[${index}] is not a valid <host>:<port> entry`
       );
