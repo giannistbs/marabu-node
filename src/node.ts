@@ -389,6 +389,7 @@ export class MarabuNode {
       socket.off("error", onError);
       socket.off("timeout", onTimeout);
       socket.setTimeout(0);
+      console.log(`[outbound ${peer}] connected`);
       this.handleConnectedSocket(socket, true, peer);
     };
 
