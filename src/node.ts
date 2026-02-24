@@ -31,6 +31,8 @@ export class MarabuNode {
     this.server = net.createServer();
     // Track inbound sockets and route them through common connection handling.
     this.server.on("connection", (socket) => {
+      const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? 0}`;
+      console.log(`[inbound ${remote}] OK: connected`);
       this.handleConnectedSocket(socket, false);
     });
     // Surface server-level failures for observability.
