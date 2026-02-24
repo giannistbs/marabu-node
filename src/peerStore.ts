@@ -19,6 +19,7 @@ export class PeerStore {
   private readonly peers = new Set<string>();
 
   private loaded = false;
+  private saveQueue: Promise<void> = Promise.resolve();
 
   // Stores file and bootstrap options used throughout the peer-store lifecycle.
   constructor(options: PeerStoreOptions) {
@@ -102,6 +103,11 @@ export class PeerStore {
     return changed;
   }
 
+  public async removePeer(peer: string): Promise<void> {
+    this.peers.delete(peer);
+    await this.save();
+  }
+
   // Extracts peer arrays from either legacy array files or object-wrapped files.
   private extractPeers(value: unknown): string[] {
     if (Array.isArray(value)) {
@@ -122,12 +128,17 @@ export class PeerStore {
     return [];
   }
 
-  // Persists peers atomically by writing a temp file and renaming into place.
+  // Serializes saves so concurrent callers don't race on the temp file.
   private async save(): Promise<void> {
+    this.saveQueue = this.saveQueue.then(() => this.writeToDisk(), () => this.writeToDisk());
+    return this.saveQueue;
+  }
+
+  private async writeToDisk(): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
 
     const payload = JSON.stringify({ peers: this.getPeers() }, null, 2) + "\n";
-    const tempPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}`;
+    const tempPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     await writeFile(tempPath, payload, "utf8");
     await rename(tempPath, this.filePath);

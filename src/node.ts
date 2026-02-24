@@ -18,6 +18,8 @@ export class MarabuNode {
   private readonly connections = new Map<net.Socket, ConnectionState>();
   private readonly outboundSocketsByPeer = new Map<string, net.Socket>();
   private readonly dialingPeers = new Set<string>();
+  private readonly failedAttemptsByPeer = new Map<string, number>();
+  private readonly maxFailedAttempts = 5;
 
   private reconnectTimer: NodeJS.Timeout | null = null;
   private nextConnectionId = 1;
@@ -374,6 +376,7 @@ export class MarabuNode {
       socket.off("connect", onConnect);
       socket.destroy();
       console.warn(`[outbound ${peer}] FAIL: connection timed out`);
+      this.recordFailedAttempt(peer);
     };
 
     const onError = (error: Error): void => {
@@ -383,6 +386,7 @@ export class MarabuNode {
       socket.off("connect", onConnect);
       socket.destroy();
       console.warn(`[outbound ${peer}] FAIL: ${error.message}`);
+      this.recordFailedAttempt(peer);
     };
 
     const onConnect = (): void => {
@@ -393,11 +397,24 @@ export class MarabuNode {
       socket.setTimeout(0);
       console.log(`[outbound ${peer}] OK: connected`);
       this.handleConnectedSocket(socket, true, peer);
+      this.failedAttemptsByPeer.delete(peer);
     };
 
     socket.once("timeout", onTimeout);
     socket.once("error", onError);
     socket.once("connect", onConnect);
+  }
+
+  private recordFailedAttempt(peer: string): void {
+    const attempts = (this.failedAttemptsByPeer.get(peer) ?? 0) + 1;
+    this.failedAttemptsByPeer.set(peer, attempts);
+    if (attempts >= this.maxFailedAttempts) {
+      console.warn(`[outbound ${peer}] removing after ${attempts} failed attempts`);
+      this.peerStore.removePeer(peer).catch((err: unknown) => {
+        console.error(`[outbound ${peer}] failed to remove peer: ${err}`);
+      });
+      this.failedAttemptsByPeer.delete(peer);
+    }
   }
 
   // Formats a socket's remote endpoint for logs and state labels.
