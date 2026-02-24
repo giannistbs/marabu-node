@@ -196,7 +196,11 @@ export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress>
 
   const host = hostMatch[1];
   const portText = hostMatch[2];
-  if (host === undefined || portText === undefined || /^127/.test(host) || host === "::1" || host === "localhost" || host === "10.0.0.2") {
+  if (
+    host === undefined || portText === undefined ||
+    /^127/.test(host) || host === "::1" || host === "localhost" ||
+    host === "10.0.0.2" || host === "0.0.0.0"
+  ) {
     throw new Error("Invalid peer address");
   }
 
