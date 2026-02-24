@@ -349,13 +349,13 @@ export class MarabuNode {
 
     try {
       if (!await isValidPeerAddress(peer)) {
-        console.warn(`[outbound ${peer}] invalid address`);
+        console.warn(`[outbound ${peer}] FAIL: invalid address`);
         return;
       }
 
       parsed = await parsePeerAddress(peer);
     } catch (err) {
-      console.warn(`[outbound ${peer}] failed to parse address: ${(err as Error).message}`);
+      console.warn(`[outbound ${peer}] FAIL: failed to parse address: ${(err as Error).message}`);
       return;
     }
 
@@ -371,7 +371,7 @@ export class MarabuNode {
       socket.off("error", onError);
       socket.off("connect", onConnect);
       socket.destroy();
-      console.warn(`[outbound ${peer}] connection timed out`);
+      console.warn(`[outbound ${peer}] FAIL: connection timed out`);
     };
 
     const onError = (error: Error): void => {
@@ -380,7 +380,7 @@ export class MarabuNode {
       socket.off("timeout", onTimeout);
       socket.off("connect", onConnect);
       socket.destroy();
-      console.warn(`[outbound ${peer}] ${error.message}`);
+      console.warn(`[outbound ${peer}] FAIL: ${error.message}`);
     };
 
     const onConnect = (): void => {
@@ -389,7 +389,7 @@ export class MarabuNode {
       socket.off("error", onError);
       socket.off("timeout", onTimeout);
       socket.setTimeout(0);
-      console.log(`[outbound ${peer}] connected`);
+      console.log(`[outbound ${peer}] OK: connected`);
       this.handleConnectedSocket(socket, true, peer);
     };
 
