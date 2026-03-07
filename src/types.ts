@@ -31,6 +31,17 @@ export interface PeersMessage {
   peers: string[];
 }
 
+export interface GetObjectMessage {
+  type: "getobject";
+  objectid: string;
+}
+
+export interface IHaveObjectMessage {
+  type: "ihaveobject";
+  objectid: string;
+}
+
+
 export interface ErrorMessage {
   type: "error";
   name: string;
