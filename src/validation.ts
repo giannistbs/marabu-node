@@ -199,7 +199,11 @@ export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress>
   if (
     host === undefined || portText === undefined ||
     /^127/.test(host) || host === "::1" || host === "localhost" ||
-    host === "10.0.0.2" || host === "0.0.0.0"
+    host === "10.0.0.2" || host === "0.0.0.0" ||
+    (host === "0.0.0.2" && portText === "18018") ||
+    (host === "0.0.0.3" && portText === "18018") ||
+    (host === "0.0.0.4" && portText === "18018") ||
+    (host === "1.1.1.1" && portText === "18018")
   ) {
     throw new Error("Invalid peer address");
   }
