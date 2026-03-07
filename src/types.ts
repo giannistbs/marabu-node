@@ -70,4 +70,10 @@ export type AnyMessage =
   | HelloMessage
   | GetPeersMessage
   | PeersMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | GetObjectMessage
+  | IHaveObjectMessage
+  | GetMemPool
+  | Mempool
+  | GetChainTip
+  | ChainTip;
