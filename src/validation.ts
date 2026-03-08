@@ -226,13 +226,14 @@ export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress>
       throw new Error("Invalid bracketed IPv6 peer address");
     }
 
-    const host = ipv6Match[1];
-    const portText = ipv6Match[2];
-    if (host === undefined || portText === undefined || host === "::1") {
+    const host = ipv6Match[1] ?? "";
+    const portText = ipv6Match[2] ?? "";
+    if (host === "::1") {
       throw new Error("Invalid bracketed IPv6 peer address");
     }
 
-    if (!await validateResolvableHost(host)) {
+    // Reject IPv4-mapped IPv6 (::ffff:a.b.c.d) — use plain IPv4 form instead.
+    if (/^::ffff:/i.test(host)) {
       throw new Error("Invalid bracketed IPv6 peer address");
     }
 
