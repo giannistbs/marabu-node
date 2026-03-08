@@ -9,13 +9,11 @@ interface StoredPeerFile {
 export interface PeerStoreOptions {
   filePath: string;
   bootstrapPeers: string[];
-  includeBootstrap: boolean;
 }
 
 export class PeerStore {
   private readonly filePath: string;
   private readonly bootstrapPeers: string[];
-  private readonly includeBootstrap: boolean;
   private readonly peers = new Set<string>();
 
   private loaded = false;
@@ -25,7 +23,6 @@ export class PeerStore {
   constructor(options: PeerStoreOptions) {
     this.filePath = options.filePath;
     this.bootstrapPeers = options.bootstrapPeers;
-    this.includeBootstrap = options.includeBootstrap;
   }
 
   // Loads peers from disk, merges bootstrap peers, and persists normalized output.
@@ -55,8 +52,8 @@ export class PeerStore {
       shouldPersist = true;
     }
 
-    // Seed from bootstrap peers when enabled.
-    if (this.includeBootstrap && await this.addPeers(this.bootstrapPeers)) {
+    // Always seed from bootstrap peers so the store starts with known network entrypoints.
+    if (await this.addPeers(this.bootstrapPeers)) {
       shouldPersist = true;
     }
 

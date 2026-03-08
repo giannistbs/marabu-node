@@ -18,70 +18,21 @@ export interface NodeConfig {
   version: string;
   agent: string;
   peersFile: string;
-  disableBootstrap: boolean;
   reconnectIntervalMs: number;
   bootstrapPeers: string[];
 }
 
-// Parses flexible boolean-like environment variable values.
-function parseBoolean(value: string | undefined): boolean {
-  // Treat missing values as disabled for feature-style environment flags.
-  if (value === undefined) {
-    return false;
-  }
-
-  // Accept a small set of common truthy textual values.
-  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-}
-
-// Parses a non-negative integer environment variable with fallback support.
-function parsePositiveInt(
-  value: string | undefined,
-  defaultValue: number,
-  fieldName: string
-): number {
-  // Fall back to defaults when variables are omitted or empty.
-  if (value === undefined || value.trim() === "") {
-    return defaultValue;
-  }
-
-  // Parse explicitly in base-10 to avoid surprising coercion rules.
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`${fieldName} must be a non-negative integer`);
-  }
-
-  return parsed;
-}
-
 // Loads node configuration from environment variables and project defaults.
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): NodeConfig {
-  // Resolve the listening port and validate it against TCP limits.
-  const port = parsePositiveInt(env.MARABU_PORT, DEFAULT_PORT, "MARABU_PORT");
-  if (port > 65_535) {
-    throw new Error("MARABU_PORT must be <= 65535");
-  }
-
-  // Resolve reconnect cadence used by the outbound dial loop.
-  const reconnectIntervalMs = parsePositiveInt(
-    env.MARABU_RECONNECT_INTERVAL_MS,
-    DEFAULT_RECONNECT_INTERVAL_MS,
-    "MARABU_RECONNECT_INTERVAL_MS"
-  );
-
-  // Default to the repository-local peer file when not explicitly set.
-  const peersFile =
-    env.MARABU_PEERS_FILE ?? path.resolve(process.cwd(), "data", "peers.json");
-
-  // Build the final runtime config with environment overrides applied.
   return {
     host: env.MARABU_HOST ?? DEFAULT_HOST,
-    port,
-    version: env.MARABU_VERSION ?? DEFAULT_VERSION,
-    agent: env.MARABU_AGENT ?? DEFAULT_AGENT,
-    peersFile,
-    disableBootstrap: parseBoolean(env.MARABU_DISABLE_BOOTSTRAP),
-    reconnectIntervalMs,
+    port: Number(env.MARABU_PORT ?? DEFAULT_PORT),
+    version: DEFAULT_VERSION,
+    agent: DEFAULT_AGENT,
+    peersFile: env.MARABU_PEERS_FILE ?? path.resolve(process.cwd(), "data", "peers.json"),
+    reconnectIntervalMs: Number(
+      env.MARABU_RECONNECT_INTERVAL_MS ?? DEFAULT_RECONNECT_INTERVAL_MS
+    ),
     bootstrapPeers: [...DEFAULT_BOOTSTRAP_PEERS]
   };
 }

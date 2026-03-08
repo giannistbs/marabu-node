@@ -1,17 +1,16 @@
-import { loadConfig, NodeConfig } from "./config.js";
+import { loadConfig } from "./config.js";
 import { MarabuNode } from "./node.js";
 import { PeerStore } from "./peerStore.js";
 
 // Bootstraps configuration, networking, and lifecycle handlers for the node.
 async function main(): Promise<void> {
   // Load runtime configuration once at startup.
-  const config: NodeConfig = loadConfig();
+  const config = loadConfig();
 
-  // Create peer persistence with optional bootstrap population.
+  // Create peer persistence seeded with the built-in bootstrap peers.
   const peerStore = new PeerStore({
     filePath: config.peersFile,
-    bootstrapPeers: config.bootstrapPeers,
-    includeBootstrap: !config.disableBootstrap
+    bootstrapPeers: config.bootstrapPeers
   });
 
   // Create and start the node before registering shutdown hooks.
