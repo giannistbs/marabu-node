@@ -1,6 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { isValidPeerAddress } from "./validation.js";
+import { parsePeerAddress } from "./validation.js";
+
+const MAX_PEERS_PER_HOST = 3;
 
 interface StoredPeerFile {
   peers: string[];
@@ -80,21 +82,34 @@ export class PeerStore {
     return changed;
   }
 
-  // Adds valid peers while filtering invalid entries and duplicates.
+  // Adds valid peers while filtering invalid entries, duplicates, and flooded hosts.
   private async addPeers(peers: string[]): Promise<boolean> {
     let changed = false;
+    const hostCounts = await this.getHostPeerCounts();
 
     for (const peer of peers) {
-      // Skip invalid addresses instead of poisoning the store.
-      if (!await isValidPeerAddress(peer)) {
+      let hostKey: string;
+
+      try {
+        // Parse once so validation and host-based rate limiting share the same result.
+        const parsedPeer = await parsePeerAddress(peer);
+        hostKey = parsedPeer.host.toLowerCase();
+      } catch {
         continue;
       }
 
       // Only track peers once to keep the on-disk list canonical.
-      if (!this.peers.has(peer)) {
-        this.peers.add(peer);
-        changed = true;
+      if (this.peers.has(peer)) {
+        continue;
       }
+
+      if ((hostCounts.get(hostKey) ?? 0) >= MAX_PEERS_PER_HOST) {
+        continue;
+      }
+
+      this.peers.add(peer);
+      hostCounts.set(hostKey, (hostCounts.get(hostKey) ?? 0) + 1);
+      changed = true;
     }
 
     return changed;
@@ -123,6 +138,22 @@ export class PeerStore {
 
     // Unknown file shapes are treated as empty peer lists.
     return [];
+  }
+
+  private async getHostPeerCounts(): Promise<Map<string, number>> {
+    const hostCounts = new Map<string, number>();
+
+    for (const peer of this.peers) {
+      try {
+        const parsedPeer = await parsePeerAddress(peer);
+        const hostKey = parsedPeer.host.toLowerCase();
+        hostCounts.set(hostKey, (hostCounts.get(hostKey) ?? 0) + 1);
+      } catch {
+        // Ignore malformed legacy entries instead of failing future peer merges.
+      }
+    }
+
+    return hostCounts;
   }
 
   // Serializes saves so concurrent callers don't race on the temp file.
