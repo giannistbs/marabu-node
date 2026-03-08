@@ -159,7 +159,7 @@ const IPV4_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const HOSTNAME_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
 
 // Set of blocked IP addresses.
-const BLOCKED_IPS = new Set(["1.1.1.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "76.76.21.21", "213.149.188.242"]);
+const BLOCKED_IPS = new Set(["1.1.1.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "76.76.21.21", "213.149.188.242", "1.2.3.4"]);
 
 // Placeholder and documentation hostnames that are never real peers.
 const BLOCKED_HOSTNAMES = new Set([
