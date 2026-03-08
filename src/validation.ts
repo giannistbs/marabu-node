@@ -232,6 +232,10 @@ export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress>
       throw new Error("Invalid bracketed IPv6 peer address");
     }
 
+    if (!await validateResolvableHost(host)) {
+      throw new Error("Invalid bracketed IPv6 peer address");
+    }
+
     return {
       host,
       port: parsePort(portText)
@@ -255,7 +259,7 @@ export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress>
     if (BLOCKED_HOSTNAMES.has(host.toLowerCase())) {
       throw new Error("Invalid peer address");
     }
-    if (!await validateHostname(host)) {
+    if (!await validateResolvableHost(host)) {
       throw new Error("Invalid peer address");
     }
   } else {
@@ -268,7 +272,8 @@ export async function parsePeerAddress(peer: string): Promise<ParsedPeerAddress>
   };
 }
 
-async function validateHostname(host: string): Promise<boolean> {
+// Resolves hostnames and validates IP literals through the platform resolver.
+async function validateResolvableHost(host: string): Promise<boolean> {
   try {
     await dns.lookup(host);
     return true;
