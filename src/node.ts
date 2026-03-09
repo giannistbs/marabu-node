@@ -1,6 +1,7 @@
 import net from "node:net";
 import { encodeMessage, decodeLine } from "./codec.js";
 import type { NodeConfig } from "./config.js";
+import { ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
 import type { AnyMessage, ErrorMessage } from "./types.js";
 import { MessageValidationError, parsePeerAddress, isValidPeerAddress } from "./validation.js";
@@ -28,7 +29,8 @@ export class MarabuNode {
   // Initializes socket server listeners and shared runtime state.
   constructor(
     private readonly config: NodeConfig,
-    private readonly peerStore: PeerStore
+    private readonly peerStore: PeerStore,
+    private readonly objectStore: ObjectStore
   ) {
     this.server = net.createServer();
     // Track inbound sockets and route them through common connection handling.
@@ -84,6 +86,7 @@ export class MarabuNode {
   // Stops reconnect loops, tears down sockets, and closes the listening server.
   async stop(): Promise<void> {
     if (!this.running) {
+      await this.objectStore.close();
       return;
     }
 
@@ -108,6 +111,8 @@ export class MarabuNode {
         this.server.close(() => resolve());
       });
     }
+
+    await this.objectStore.close();
   }
 
   // Returns the effective bound port after startup (useful when binding to 0).
