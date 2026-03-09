@@ -1,5 +1,5 @@
 import canonicalizeImport from "canonicalize";
-import type { AnyMessage } from "./types.js";
+import type { AnyMessage, ApplicationObject } from "./types.js";
 import { MessageValidationError, validateMessage } from "./validation.js";
 
 const canonicalize = canonicalizeImport as unknown as (
@@ -15,6 +15,16 @@ export function encodeMessage(message: AnyMessage): string {
   }
 
   return `${encoded}\n`;
+}
+
+export function encodeApplicationObject(object: ApplicationObject): string {
+    // Canonical JSON ensures deterministic wire encoding for equivalent payloads.
+    const encoded = canonicalize(object);
+    if (typeof encoded !== "string") {
+      throw new Error("Unable to canonicalize message");
+    }
+  
+    return `${encoded}`;
 }
 
 // Parses one newline-delimited frame and validates it as a protocol message.
