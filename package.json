@@ -10,7 +10,10 @@
     "test": "node --import tsx --test test/**/*.test.ts"
   },
   "dependencies": {
-    "canonicalize": "^2.1.0"
+    "blake2": "^5.0.1",
+    "canonicalize": "^2.1.0",
+    "clean": "^4.0.2",
+    "level-ts": "^2.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
