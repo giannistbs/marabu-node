@@ -18,7 +18,13 @@ async function main(): Promise<void> {
 
   // Create and start the node before registering shutdown hooks.
   const node: MarabuNode = new MarabuNode(config, peerStore, objectStore);
-  await node.start();
+  try {
+    await node.start();
+  } catch (error) {
+    // Ensure the object store is cleaned up if startup fails before signal handlers are registered.
+    await objectStore.close();
+    throw error;
+  }
 
   // Print key startup metadata for visibility and debugging.
   const listeningPort = node.getListeningPort();
