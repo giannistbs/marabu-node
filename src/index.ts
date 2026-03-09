@@ -1,5 +1,6 @@
 import { loadConfig } from "./config.js";
 import { MarabuNode } from "./node.js";
+import { ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
 
 // Bootstraps configuration, networking, and lifecycle handlers for the node.
@@ -12,15 +13,18 @@ async function main(): Promise<void> {
     filePath: config.peersFile,
     bootstrapPeers: config.bootstrapPeers
   });
+  const objectStore = new ObjectStore(config.objectStorePath);
+  await objectStore.open();
 
   // Create and start the node before registering shutdown hooks.
-  const node: MarabuNode = new MarabuNode(config, peerStore);
+  const node: MarabuNode = new MarabuNode(config, peerStore, objectStore);
   await node.start();
 
   // Print key startup metadata for visibility and debugging.
   const listeningPort = node.getListeningPort();
   console.log(`[startup] Listening on ${config.host}:${listeningPort}`);
   console.log(`[startup] Peer store path: ${config.peersFile}`);
+  console.log(`[startup] Object store path: ${config.objectStorePath}`);
 
   // Guard against duplicate shutdown handling from repeated signals.
   let stopping = false;
