@@ -5,7 +5,7 @@ import type { ApplicationObject } from "./types.js";
 
 interface LevelDatabase {
   put(key: string, value: ApplicationObject): Promise<void>;
-  get(key: string): Promise<ApplicationObject | null>;
+  get(key: string): Promise<ApplicationObject>;
   del(key: string): Promise<void>;
   close?(): Promise<void> | void;
 }
@@ -35,7 +35,7 @@ export class ObjectStore {
     await database.put(key, object);
   }
 
-  async get(key: string): Promise<ApplicationObject | null> {
+  async get(key: string): Promise<ApplicationObject> {
     const database = this.requireDatabase();
     return await database.get(key);
   }
