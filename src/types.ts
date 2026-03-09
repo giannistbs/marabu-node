@@ -65,6 +65,40 @@ export interface ErrorMessage {
   description: string;
 }
 
+export interface OutPoint {
+  txid: string;
+  index: number;
+}
+
+export interface Input {
+  outPoint: OutPoint;
+  sig: string | null;
+}
+
+export interface Output {
+  pubkey: string;
+  value: number;
+}
+
+export interface Transaction {
+  type: "transaction";
+  inputs: Input[];
+  outputs: Output[];
+}
+
+export interface CoinbaseTransaction {
+  type: "transaction";
+  height: number;
+  outputs: Output[];
+}
+
+export type ApplicationObject = Transaction | CoinbaseTransaction; // for now.. 
+
+export interface ObjectMessage {
+  type: "object";
+  object: ApplicationObject;
+}
+
 // Union of all message envelopes exchanged on the wire.
 export type AnyMessage =
   | HelloMessage
@@ -76,4 +110,5 @@ export type AnyMessage =
   | GetMemPool
   | Mempool
   | GetChainTip
-  | ChainTip;
+  | ChainTip
+  | ApplicationObject;
