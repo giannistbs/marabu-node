@@ -17,6 +17,8 @@ import type {
 
 const HELLO_VERSION_PATTERN = /^0\.10\.\d+$/;
 const OBJECT_ID_PATTERN = /^[a-f0-9]{64}$/;
+const ED25519_PUBLIC_KEY_PATTERN = /^[a-f0-9]{64}$/;
+const ED25519_SIGNATURE_PATTERN = /^[a-f0-9]{128}$/;
 
 type RecordValue = Record<string, unknown>;
 
@@ -62,7 +64,7 @@ function assertNumber(value: unknown, fieldName: string): number {
 // Asserts that a field is a non-negative integer.
 function assertNonNegativeInteger(value: unknown, fieldName: string): number {
   const number = assertNumber(value, fieldName);
-  if (!Number.isInteger(number) || number < 0) {
+  if (!Number.isSafeInteger(number) || number < 0) {
     throw new MessageValidationError(
       `${fieldName} must be a non-negative integer`
     );
@@ -81,6 +83,41 @@ function assertObjectId(value: unknown, fieldName: string): string {
   }
 
   return objectId;
+}
+
+// Asserts that a field is a lowercase hexadecimal string of the exact length.
+function assertHexString(
+  value: unknown,
+  fieldName: string,
+  pattern: RegExp,
+  description: string
+): string {
+  const hexString = assertString(value, fieldName);
+  if (!pattern.test(hexString)) {
+    throw new MessageValidationError(`${fieldName} must be ${description}`);
+  }
+
+  return hexString;
+}
+
+// Asserts that a field is a hex-encoded Ed25519 public key.
+function assertPublicKey(value: unknown, fieldName: string): string {
+  return assertHexString(
+    value,
+    fieldName,
+    ED25519_PUBLIC_KEY_PATTERN,
+    "a 32-byte lowercase hexadecimal Ed25519 public key"
+  );
+}
+
+// Asserts that a field is a hex-encoded Ed25519 signature.
+function assertSignature(value: unknown, fieldName: string): string {
+  return assertHexString(
+    value,
+    fieldName,
+    ED25519_SIGNATURE_PATTERN,
+    "a 64-byte lowercase hexadecimal Ed25519 signature"
+  );
 }
 
 // Enforces an exact key set with required and optional fields.
@@ -271,6 +308,11 @@ function validateTransactionMessage(value: RecordValue): Transaction {
   if (!Array.isArray(value.outputs)) {
     throw new MessageValidationError("transaction.outputs must be an array");
   }
+  if (value.inputs.length === 0) {
+    throw new MessageValidationError(
+      "transaction.inputs must contain at least one input"
+    );
+  }
 
   return {
     type: "transaction",
@@ -287,28 +329,25 @@ function validateTransactionMessage(value: RecordValue): Transaction {
   };
 }
 
-// Validates a single transaction input (references an outPoint and signature).
+// Validates a single transaction input (references an outpoint and signature).
 function validateInput(value: RecordValue): Input {
-  assertExactKeys(value, ["outPoint", "sig"]);
+  assertExactKeys(value, ["outpoint", "sig"]);
 
   return {
-    outPoint: validateOutPoint(
-      assertRecord(value.outPoint, "input.outPoint must be a JSON object")
+    outpoint: validateOutpoint(
+      assertRecord(value.outpoint, "input.outpoint must be a JSON object")
     ),
-    sig:
-      value.sig === null
-        ? null
-        : assertString(value.sig, "input.sig")
+    sig: assertSignature(value.sig, "input.sig")
   };
 }
 
-// Validates an outPoint reference (txid/index pair).
-function validateOutPoint(value: RecordValue): OutPoint {
+// Validates an outpoint reference (txid/index pair).
+function validateOutpoint(value: RecordValue): OutPoint {
   assertExactKeys(value, ["txid", "index"]);
 
   return {
-    txid: assertObjectId(value.txid, "outPoint.txid"),
-    index: assertNonNegativeInteger(value.index, "outPoint.index")
+    txid: assertObjectId(value.txid, "outpoint.txid"),
+    index: assertNonNegativeInteger(value.index, "outpoint.index")
   };
 }
 
@@ -317,7 +356,7 @@ function validateOutput(value: RecordValue): Output {
   assertExactKeys(value, ["pubkey", "value"]);
 
   return {
-    pubkey: assertString(value.pubkey, "output.pubkey"),
+    pubkey: assertPublicKey(value.pubkey, "output.pubkey"),
     value: assertNonNegativeInteger(value.value, "output.value")
   };
 }

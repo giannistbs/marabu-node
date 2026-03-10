@@ -71,8 +71,8 @@ export interface OutPoint {
 }
 
 export interface Input {
-  outPoint: OutPoint;
-  sig: string | null;
+  outpoint: OutPoint;
+  sig: string;
 }
 
 export interface Output {

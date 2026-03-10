@@ -1,5 +1,5 @@
 import canonicalizeImport from "canonicalize";
-import type { AnyMessage, ApplicationObject } from "./types.js";
+import type { AnyMessage, ApplicationObject, Transaction } from "./types.js";
 import {
   MessageValidationError,
   validateMessage
@@ -8,6 +8,7 @@ import {
 const canonicalize = canonicalizeImport as unknown as (
   input: unknown
 ) => string | undefined;
+const textEncoder = new TextEncoder();
 
 // Canonicalizes and serializes a message as one newline-delimited JSON frame.
 export function encodeMessage(message: AnyMessage): string {
@@ -28,6 +29,25 @@ export function encodeApplicationObject(object: ApplicationObject): string {
     }
   
     return `${encoded}`;
+}
+
+// Canonicalizes a transaction with all signatures nulled for signature verification.
+export function encodeTransactionSigningPayload(
+  transaction: Transaction
+): Uint8Array {
+  const payload = {
+    ...transaction,
+    inputs: transaction.inputs.map((input) => ({
+      ...input,
+      sig: null
+    }))
+  };
+  const encoded = canonicalize(payload);
+  if (typeof encoded !== "string") {
+    throw new Error("Unable to canonicalize signing payload");
+  }
+
+  return textEncoder.encode(encoded);
 }
 
 // Parses one newline-delimited frame and validates it as a protocol message.
