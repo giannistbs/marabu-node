@@ -41,23 +41,23 @@ export interface IHaveObjectMessage {
   objectid: string;
 }
 
-export interface GetMemPool {
-  type: "getmempool";
-}
+// export interface GetMemPool {
+//   type: "getmempool";
+// }
 
-export interface Mempool {
-  type: "mempool";
-  txids: string[];
-}
+// export interface Mempool {
+//   type: "mempool";
+//   txids: string[];
+// }
 
-export interface GetChainTip {
-  type: "getchaintip";
-}
+// export interface GetChainTip {
+//   type: "getchaintip";
+// }
 
-export interface ChainTip {
-  type: "chaintip";
-  blockid: string;
-}
+// export interface ChainTip {
+//   type: "chaintip";
+//   blockid: string;
+// }
 
 export interface ErrorMessage {
   type: "error";
@@ -107,8 +107,8 @@ export type AnyMessage =
   | ErrorMessage
   | GetObjectMessage
   | IHaveObjectMessage
-  | GetMemPool
-  | Mempool
-  | GetChainTip
-  | ChainTip
+  // | GetMemPool
+  // | Mempool
+  // | GetChainTip
+  // | ChainTip
   | ApplicationObject;
