@@ -107,8 +107,8 @@ export type AnyMessage =
   | ErrorMessage
   | GetObjectMessage
   | IHaveObjectMessage
+  | ObjectMessage
   // | GetMemPool
   // | Mempool
   // | GetChainTip
-  // | ChainTip
-  | ApplicationObject;
+  // | ChainTip;

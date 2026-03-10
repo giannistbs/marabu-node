@@ -5,7 +5,14 @@ import type {
   GetPeersMessage,
   HelloMessage,
   IHaveObjectMessage,
-  PeersMessage
+  PeersMessage,
+  Transaction,
+  CoinbaseTransaction,
+  ObjectMessage,
+  Input,
+  Output,
+  ApplicationObject,
+  OutPoint
 } from "../types.js";
 
 const HELLO_VERSION_PATTERN = /^0\.10\.\d+$/;
@@ -37,6 +44,15 @@ function assertRecord(value: unknown, errorMessage: string): RecordValue {
 function assertString(value: unknown, fieldName: string): string {
   if (typeof value !== "string") {
     throw new MessageValidationError(`${fieldName} must be a string`);
+  }
+
+  return value;
+}
+
+// Asserts that a field is a finite number and returns the narrowed value.
+function assertNumber(value: unknown, fieldName: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new MessageValidationError(`${fieldName} must be a number`);
   }
 
   return value;
@@ -162,7 +178,111 @@ function validateGetObjectMessage(value: RecordValue): GetObjectMessage {
   };
 }
 
+function validateObjectMessage(value: RecordValue): ObjectMessage {
+  assertExactKeys(value, ["type", "object"]);
 
+  return {
+    type: "object",
+    object: validateApplicationObject(
+      assertRecord(value.object, "object.object must be a JSON object")
+    )
+  };
+}
+
+function validateInput(value: RecordValue): Input {
+  assertExactKeys(value, ["outPoint", "sig"]);
+
+  return {
+    outPoint: validateOutPoint(
+      assertRecord(value.outPoint, "input.outPoint must be a JSON object")
+    ),
+    sig:
+      value.sig === null
+        ? null
+        : assertString(value.sig, "input.sig")
+  };
+}
+
+function validateOutPoint(value: RecordValue): OutPoint {
+  assertExactKeys(value, ["txid", "index"]);
+
+  return {
+    txid: assertString(value.txid, "outPoint.txid"),
+    index: assertNumber(value.index, "outPoint.index")
+  };
+}
+
+function validateOutput(value: RecordValue): Output {
+  assertExactKeys(value, ["pubkey", "value"]);
+
+  return {
+    pubkey: assertString(value.pubkey, "output.pubkey"),
+    value: assertNumber(value.value, "output.value")
+  };
+}
+
+function validateTransactionMessage(value: RecordValue): Transaction {
+  assertExactKeys(value, ["type", "inputs", "outputs"]);
+  if (value.type !== "transaction") {
+    throw new MessageValidationError("transaction.type must be 'transaction'");
+  }
+
+  if (!Array.isArray(value.inputs)) {
+    throw new MessageValidationError("transaction.inputs must be an array");
+  }
+
+  if (!Array.isArray(value.outputs)) {
+    throw new MessageValidationError("transaction.outputs must be an array");
+  }
+
+  return {
+    type: "transaction",
+    inputs: value.inputs.map((input, index) =>
+      validateInput(
+        assertRecord(input, `transaction.inputs[${index}] must be a JSON object`)
+      )
+    ),
+    outputs: value.outputs.map((output, index) =>
+      validateOutput(
+        assertRecord(output, `transaction.outputs[${index}] must be a JSON object`)
+      )
+    )
+  };
+}
+
+function validateCoinbaseTransactionMessage(value: RecordValue): CoinbaseTransaction {
+  assertExactKeys(value, ["type", "height", "outputs"]);
+  if (value.type !== "transaction") {
+    throw new MessageValidationError("coinbase.type must be 'transaction'");
+  }
+
+  if (!Array.isArray(value.outputs)) {
+    throw new MessageValidationError("coinbase.outputs must be an array");
+  }
+
+  return {
+    type: "transaction",
+    height: assertNumber(value.height, "coinbase.height"),
+    outputs: value.outputs.map((output, index) =>
+      validateOutput(
+        assertRecord(output, `coinbase.outputs[${index}] must be a JSON object`)
+      )
+    )
+  };
+}
+
+function validateApplicationObject(value: RecordValue): ApplicationObject {
+  const type = assertString(value.type, "object.object.type");
+  if (type !== "transaction") {
+    throw new MessageValidationError("object.object.type must be 'transaction'");
+  }
+
+  if (Object.hasOwn(value, "height")) {
+    return validateCoinbaseTransactionMessage(value);
+  }
+
+  return validateTransactionMessage(value);
+}
 
 // Dispatches validation by message type and returns a typed protocol union.
 export function validateMessage(value: unknown): AnyMessage {
@@ -182,6 +302,8 @@ export function validateMessage(value: unknown): AnyMessage {
       return validateGetObjectMessage(record);
     case "error":
       return validateErrorMessage(record);
+    case "object":
+      return validateObjectMessage(record);
     default:
       throw new MessageValidationError("Unknown message type");
   }
