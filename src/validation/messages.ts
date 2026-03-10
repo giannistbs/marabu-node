@@ -150,12 +150,20 @@ function validateErrorMessage(value: RecordValue): ErrorMessage {
   };
 }
 
+// Validates an "ihaveobject" message, ensuring the objectid field is present and well-formed.
 function validateIhHaveObjectMessage(value: RecordValue): IHaveObjectMessage {
   assertExactKeys(value, ["type", "objectid"]);
 
+  // Validate objectid: must be a non-empty, 64-char, lowercase hex string.
   const objectid = assertString(value.objectid, "ihaveobject.objectid");
-  if (objectid.trim() === "" || objectid.length !== 64 || !/^[a-f0-9]{64}$/.test(objectid)) {
-    throw new MessageValidationError("ihaveobject.objectid must be a 64-character hexadecimal string");
+  if (
+    objectid.trim() === "" ||
+    objectid.length !== 64 ||
+    !/^[a-f0-9]{64}$/.test(objectid)
+  ) {
+    throw new MessageValidationError(
+      "ihaveobject.objectid must be a 64-character hexadecimal string"
+    );
   }
 
   return {
@@ -164,12 +172,20 @@ function validateIhHaveObjectMessage(value: RecordValue): IHaveObjectMessage {
   };
 }
 
+// Validates a "getobject" request message.
 function validateGetObjectMessage(value: RecordValue): GetObjectMessage {
   assertExactKeys(value, ["type", "objectid"]);
 
+  // Validate objectid as above: 64-char, lowercase hex.
   const objectid = assertString(value.objectid, "getobject.objectid");
-  if (objectid.trim() === "" || objectid.length !== 64 || !/^[a-f0-9]{64}$/.test(objectid)) {
-    throw new MessageValidationError("getobject.objectid must be a 64-character hexadecimal string");
+  if (
+    objectid.trim() === "" ||
+    objectid.length !== 64 ||
+    !/^[a-f0-9]{64}$/.test(objectid)
+  ) {
+    throw new MessageValidationError(
+      "getobject.objectid must be a 64-character hexadecimal string"
+    );
   }
 
   return {
@@ -178,9 +194,11 @@ function validateGetObjectMessage(value: RecordValue): GetObjectMessage {
   };
 }
 
+// Validates a full "object" message with a nested application object.
 function validateObjectMessage(value: RecordValue): ObjectMessage {
   assertExactKeys(value, ["type", "object"]);
 
+  // Validate the nested object property (must itself be a JSON object).
   return {
     type: "object",
     object: validateApplicationObject(
@@ -189,44 +207,58 @@ function validateObjectMessage(value: RecordValue): ObjectMessage {
   };
 }
 
-function validateInput(value: RecordValue): Input {
-  assertExactKeys(value, ["outPoint", "sig"]);
+// Validates an application-level object; supports transactions and coinbase transactions.
+function validateApplicationObject(value: RecordValue): ApplicationObject {
+  // Must be a "transaction" object by protocol.
+  const type = assertString(value.type, "object.object.type");
+  if (type !== "transaction") {
+    throw new MessageValidationError(
+      "object.object.type must be 'transaction'"
+    );
+  }
+
+  // The presence of "height" distinguishes a coinbase transaction.
+  if (Object.hasOwn(value, "height")) {
+    return validateCoinbaseTransactionMessage(value);
+  }
+
+  // Otherwise, validate as a regular transaction.
+  return validateTransactionMessage(value);
+}
+
+// Validates a coinbase transaction (height present, only outputs, no inputs).
+function validateCoinbaseTransactionMessage(value: RecordValue): CoinbaseTransaction {
+  assertExactKeys(value, ["type", "height", "outputs"]);
+  if (value.type !== "transaction") {
+    throw new MessageValidationError("coinbase.type must be 'transaction'");
+  }
+
+  // Outputs must be an array of output objects.
+  if (!Array.isArray(value.outputs)) {
+    throw new MessageValidationError("coinbase.outputs must be an array");
+  }
 
   return {
-    outPoint: validateOutPoint(
-      assertRecord(value.outPoint, "input.outPoint must be a JSON object")
-    ),
-    sig:
-      value.sig === null
-        ? null
-        : assertString(value.sig, "input.sig")
+    type: "transaction",
+    height: assertNumber(value.height, "coinbase.height"),
+    outputs: value.outputs.map((output, index) =>
+      validateOutput(
+        assertRecord(output, `coinbase.outputs[${index}] must be a JSON object`)
+      )
+    )
   };
 }
 
-function validateOutPoint(value: RecordValue): OutPoint {
-  assertExactKeys(value, ["txid", "index"]);
-
-  return {
-    txid: assertString(value.txid, "outPoint.txid"),
-    index: assertNumber(value.index, "outPoint.index")
-  };
-}
-
-function validateOutput(value: RecordValue): Output {
-  assertExactKeys(value, ["pubkey", "value"]);
-
-  return {
-    pubkey: assertString(value.pubkey, "output.pubkey"),
-    value: assertNumber(value.value, "output.value")
-  };
-}
-
+// Validates a standard transaction (must include both inputs and outputs).
 function validateTransactionMessage(value: RecordValue): Transaction {
   assertExactKeys(value, ["type", "inputs", "outputs"]);
   if (value.type !== "transaction") {
-    throw new MessageValidationError("transaction.type must be 'transaction'");
+    throw new MessageValidationError(
+      "transaction.type must be 'transaction'"
+    );
   }
 
+  // Both inputs and outputs must be arrays.
   if (!Array.isArray(value.inputs)) {
     throw new MessageValidationError("transaction.inputs must be an array");
   }
@@ -250,39 +282,42 @@ function validateTransactionMessage(value: RecordValue): Transaction {
   };
 }
 
-function validateCoinbaseTransactionMessage(value: RecordValue): CoinbaseTransaction {
-  assertExactKeys(value, ["type", "height", "outputs"]);
-  if (value.type !== "transaction") {
-    throw new MessageValidationError("coinbase.type must be 'transaction'");
-  }
-
-  if (!Array.isArray(value.outputs)) {
-    throw new MessageValidationError("coinbase.outputs must be an array");
-  }
+// Validates a single transaction input (references an outPoint and signature).
+function validateInput(value: RecordValue): Input {
+  assertExactKeys(value, ["outPoint", "sig"]);
 
   return {
-    type: "transaction",
-    height: assertNumber(value.height, "coinbase.height"),
-    outputs: value.outputs.map((output, index) =>
-      validateOutput(
-        assertRecord(output, `coinbase.outputs[${index}] must be a JSON object`)
-      )
-    )
+    outPoint: validateOutPoint(
+      assertRecord(value.outPoint, "input.outPoint must be a JSON object")
+    ),
+    sig:
+      value.sig === null
+        ? null
+        : assertString(value.sig, "input.sig")
   };
 }
 
-function validateApplicationObject(value: RecordValue): ApplicationObject {
-  const type = assertString(value.type, "object.object.type");
-  if (type !== "transaction") {
-    throw new MessageValidationError("object.object.type must be 'transaction'");
-  }
+// Validates an outPoint reference (txid/index pair).
+function validateOutPoint(value: RecordValue): OutPoint {
+  assertExactKeys(value, ["txid", "index"]);
 
-  if (Object.hasOwn(value, "height")) {
-    return validateCoinbaseTransactionMessage(value);
-  }
-
-  return validateTransactionMessage(value);
+  return {
+    txid: assertString(value.txid, "outPoint.txid"),
+    index: assertNumber(value.index, "outPoint.index")
+  };
 }
+
+// Validates a single transaction output (pubkey and value).
+function validateOutput(value: RecordValue): Output {
+  assertExactKeys(value, ["pubkey", "value"]);
+
+  return {
+    pubkey: assertString(value.pubkey, "output.pubkey"),
+    value: assertNumber(value.value, "output.value")
+  };
+}
+
+
 
 // Dispatches validation by message type and returns a typed protocol union.
 export function validateMessage(value: unknown): AnyMessage {
