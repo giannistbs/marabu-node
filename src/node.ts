@@ -1,9 +1,11 @@
 import net from "node:net";
 import { encodeMessage, decodeLine } from "./codec.js";
 import type { NodeConfig } from "./config.js";
+import { computeObjectId } from "./hashing.js";
 import { ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
-import type { AnyMessage, ErrorMessage } from "./types.js";
+import type { AnyMessage, ErrorMessage, ObjectMessage } from "./types.js";
+import { ApplicationObjectValidationError, validateApplicationObjectSemantics } from "./validation/applicationObjects.js";
 import { MessageValidationError } from "./validation/messages.js";
 import {
   parsePeerAddress,
@@ -16,6 +18,7 @@ interface ConnectionState {
   helloReceived: boolean;
   outbound: boolean;
   peerLabel: string;
+  processing: Promise<void>;
 }
 
 export class MarabuNode {
@@ -141,7 +144,8 @@ export class MarabuNode {
       buffer: "",
       helloReceived: false,
       outbound,
-      peerLabel: outboundPeer ?? this.describeSocket(socket)
+      peerLabel: outboundPeer ?? this.describeSocket(socket),
+      processing: Promise.resolve()
     };
 
     this.nextConnectionId += 1;
@@ -158,7 +162,17 @@ export class MarabuNode {
     // Accumulate stream data and parse line-delimited messages.
     socket.on("data", (chunk) => {
       const textChunk = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      this.handleData(socket, textChunk);
+      state.processing = state.processing
+        .then(() => this.handleData(socket, textChunk))
+        .catch((error: unknown) => {
+          const description =
+            error instanceof Error ? error.message : "Unexpected connection error";
+          this.sendErrorAndClose(socket, {
+            type: "error",
+            name: "INTERNAL_ERROR",
+            description
+          });
+        });
     });
 
     socket.on("error", (error) => {
@@ -189,7 +203,7 @@ export class MarabuNode {
   }
 
   // Buffers stream chunks into complete protocol lines and dispatches messages.
-  private handleData(socket: net.Socket, chunk: string): void {
+  private async handleData(socket: net.Socket, chunk: string): Promise<void> {
     const state = this.connections.get(socket);
     if (state === undefined || socket.destroyed) {
       return;
@@ -234,7 +248,7 @@ export class MarabuNode {
       }
 
       // Dispatch a validated message
-      const keepConnection = this.handleValidatedMessage(socket, state, message);
+      const keepConnection = await this.handleValidatedMessage(socket, state, message);
       // Stops the processing loop if the handler closed the socket or the message was invalid.
       if (!keepConnection) {
         return;
@@ -243,11 +257,11 @@ export class MarabuNode {
   }
 
   // Enforces handshake order and routes validated messages to protocol handlers.
-  private handleValidatedMessage(
+  private async handleValidatedMessage(
     socket: net.Socket,
     state: ConnectionState,
     message: AnyMessage
-  ): boolean {
+  ): Promise<boolean> {
     // Require hello as the first successfully parsed message.
     if (!state.helloReceived) {
       if (message.type !== "hello") {
@@ -287,6 +301,8 @@ export class MarabuNode {
         );
         return true;
       }
+      case "object":
+        return await this.handleObjectMessage(socket, message);
       default: {
         // Reject unexpected validated variants defensively.
         this.sendErrorAndClose(socket, {
@@ -296,6 +312,29 @@ export class MarabuNode {
         });
         return false;
       }
+    }
+  }
+
+  private async handleObjectMessage(
+    socket: net.Socket,
+    message: ObjectMessage
+  ): Promise<boolean> {
+    try {
+      await validateApplicationObjectSemantics(message.object, this.objectStore);
+      const objectId = computeObjectId(message.object);
+      await this.objectStore.put(objectId, message.object);
+      return true;
+    } catch (error) {
+      if (error instanceof ApplicationObjectValidationError) {
+        this.sendErrorAndClose(socket, {
+          type: "error",
+          name: error.errorName,
+          description: error.message
+        });
+        return false;
+      }
+
+      throw error;
     }
   }
 
