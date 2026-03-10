@@ -16,6 +16,7 @@ import type {
 } from "../types.js";
 
 const HELLO_VERSION_PATTERN = /^0\.10\.\d+$/;
+const OBJECT_ID_PATTERN = /^[a-f0-9]{64}$/;
 
 type RecordValue = Record<string, unknown>;
 
@@ -56,6 +57,30 @@ function assertNumber(value: unknown, fieldName: string): number {
   }
 
   return value;
+}
+
+// Asserts that a field is a non-negative integer.
+function assertNonNegativeInteger(value: unknown, fieldName: string): number {
+  const number = assertNumber(value, fieldName);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new MessageValidationError(
+      `${fieldName} must be a non-negative integer`
+    );
+  }
+
+  return number;
+}
+
+// Asserts that a field is a 64-character lowercase hexadecimal object id.
+function assertObjectId(value: unknown, fieldName: string): string {
+  const objectId = assertString(value, fieldName);
+  if (!OBJECT_ID_PATTERN.test(objectId)) {
+    throw new MessageValidationError(
+      `${fieldName} must be a 64-character hexadecimal string`
+    );
+  }
+
+  return objectId;
 }
 
 // Enforces an exact key set with required and optional fields.
@@ -154,17 +179,7 @@ function validateErrorMessage(value: RecordValue): ErrorMessage {
 function validateIhHaveObjectMessage(value: RecordValue): IHaveObjectMessage {
   assertExactKeys(value, ["type", "objectid"]);
 
-  // Validate objectid: must be a non-empty, 64-char, lowercase hex string.
-  const objectid = assertString(value.objectid, "ihaveobject.objectid");
-  if (
-    objectid.trim() === "" ||
-    objectid.length !== 64 ||
-    !/^[a-f0-9]{64}$/.test(objectid)
-  ) {
-    throw new MessageValidationError(
-      "ihaveobject.objectid must be a 64-character hexadecimal string"
-    );
-  }
+  const objectid = assertObjectId(value.objectid, "ihaveobject.objectid");
 
   return {
     type: "ihaveobject",
@@ -176,17 +191,7 @@ function validateIhHaveObjectMessage(value: RecordValue): IHaveObjectMessage {
 function validateGetObjectMessage(value: RecordValue): GetObjectMessage {
   assertExactKeys(value, ["type", "objectid"]);
 
-  // Validate objectid as above: 64-char, lowercase hex.
-  const objectid = assertString(value.objectid, "getobject.objectid");
-  if (
-    objectid.trim() === "" ||
-    objectid.length !== 64 ||
-    !/^[a-f0-9]{64}$/.test(objectid)
-  ) {
-    throw new MessageValidationError(
-      "getobject.objectid must be a 64-character hexadecimal string"
-    );
-  }
+  const objectid = assertObjectId(value.objectid, "getobject.objectid");
 
   return {
     type: "getobject",
@@ -240,7 +245,7 @@ function validateCoinbaseTransactionMessage(value: RecordValue): CoinbaseTransac
 
   return {
     type: "transaction",
-    height: assertNumber(value.height, "coinbase.height"),
+    height: assertNonNegativeInteger(value.height, "coinbase.height"),
     outputs: value.outputs.map((output, index) =>
       validateOutput(
         assertRecord(output, `coinbase.outputs[${index}] must be a JSON object`)
@@ -302,8 +307,8 @@ function validateOutPoint(value: RecordValue): OutPoint {
   assertExactKeys(value, ["txid", "index"]);
 
   return {
-    txid: assertString(value.txid, "outPoint.txid"),
-    index: assertNumber(value.index, "outPoint.index")
+    txid: assertObjectId(value.txid, "outPoint.txid"),
+    index: assertNonNegativeInteger(value.index, "outPoint.index")
   };
 }
 
@@ -313,7 +318,7 @@ function validateOutput(value: RecordValue): Output {
 
   return {
     pubkey: assertString(value.pubkey, "output.pubkey"),
-    value: assertNumber(value.value, "output.value")
+    value: assertNonNegativeInteger(value.value, "output.value")
   };
 }
 
