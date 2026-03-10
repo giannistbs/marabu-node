@@ -93,7 +93,6 @@ export class MarabuNode {
   // Stops reconnect loops, tears down sockets, and closes the listening server.
   async stop(): Promise<void> {
     if (!this.running) {
-      await this.objectStore.close();
       return;
     }
 
