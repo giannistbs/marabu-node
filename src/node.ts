@@ -4,7 +4,11 @@ import type { NodeConfig } from "./config.js";
 import { ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
 import type { AnyMessage, ErrorMessage } from "./types.js";
-import { MessageValidationError, parsePeerAddress, isValidPeerAddress } from "./validation.js";
+import { MessageValidationError } from "./validation/messages.js";
+import {
+  parsePeerAddress,
+  isValidPeerAddress
+} from "./validation/peerAddress.js";
 
 interface ConnectionState {
   id: number;

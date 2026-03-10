@@ -1,6 +1,9 @@
 import canonicalizeImport from "canonicalize";
 import type { AnyMessage, ApplicationObject } from "./types.js";
-import { MessageValidationError, validateMessage } from "./validation.js";
+import {
+  MessageValidationError,
+  validateMessage
+} from "./validation/messages.js";
 
 const canonicalize = canonicalizeImport as unknown as (
   input: unknown
