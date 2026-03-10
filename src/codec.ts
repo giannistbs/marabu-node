@@ -2,8 +2,8 @@ import canonicalizeImport from "canonicalize";
 import type { AnyMessage, ApplicationObject, Transaction } from "./types.js";
 import {
   MessageValidationError,
-  validateMessage
-} from "./validation/messages.js";
+  validateWireMessage
+} from "./validation/messageSchema.js";
 
 const canonicalize = canonicalizeImport as unknown as (
   input: unknown
@@ -61,5 +61,5 @@ export function decodeLine(line: string): AnyMessage {
   }
 
   // Enforce protocol-level validation and return a typed message shape.
-  return validateMessage(parsed);
+  return validateWireMessage(parsed);
 }

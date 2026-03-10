@@ -5,8 +5,11 @@ import { computeObjectId } from "./hashing.js";
 import { ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
 import type { AnyMessage, ErrorMessage, ObjectMessage } from "./types.js";
-import { ApplicationObjectValidationError, validateApplicationObjectSemantics } from "./validation/applicationObjects.js";
-import { MessageValidationError } from "./validation/messages.js";
+import {
+  ApplicationObjectValidationError,
+  validateApplicationObjectState
+} from "./validation/objectState.js";
+import { MessageValidationError } from "./validation/messageSchema.js";
 import {
   parsePeerAddress,
   isValidPeerAddress
@@ -319,7 +322,7 @@ export class MarabuNode {
     message: ObjectMessage
   ): Promise<boolean> {
     try {
-      await validateApplicationObjectSemantics(message.object, this.objectStore);
+      await validateApplicationObjectState(message.object, this.objectStore);
       const objectId = computeObjectId(message.object);
       await this.objectStore.put(objectId, message.object);
       return true;

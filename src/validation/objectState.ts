@@ -7,7 +7,7 @@ interface ObjectLookup {
   get(key: string): Promise<ApplicationObject>;
 }
 
-// Error type for application object semantic validation failures.
+// Error type for application object validation failures that require chain state.
 export class ApplicationObjectValidationError extends Error {
   constructor(
     public readonly errorName: ErrorName,
@@ -18,19 +18,19 @@ export class ApplicationObjectValidationError extends Error {
   }
 }
 
-// Validates semantic rules of an ApplicationObject requiring chain state.
-export async function validateApplicationObjectSemantics(
+// Validates protocol rules for an application object that require chain state.
+export async function validateApplicationObjectState(
   object: ApplicationObject,
   objectLookup: ObjectLookup
 ): Promise<void> {
   if ("height" in object) {
     return;
   }
-  await validateTransactionSignatures(object, objectLookup);
+  await validateTransactionState(object, objectLookup);
 }
 
 // Validates input signatures and referenced outputs for a transaction.
-async function validateTransactionSignatures(
+async function validateTransactionState(
   transaction: Transaction,
   objectLookup: ObjectLookup
 ): Promise<void> {

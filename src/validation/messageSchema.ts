@@ -240,18 +240,16 @@ function validateGetObjectMessage(value: RecordValue): GetObjectMessage {
 function validateObjectMessage(value: RecordValue): ObjectMessage {
   assertExactKeys(value, ["type", "object"]);
 
-  // Validate the nested object property (must itself be a JSON object).
   return {
     type: "object",
-    object: validateApplicationObject(
+    object: validateApplicationObjectShape(
       assertRecord(value.object, "object.object must be a JSON object")
     )
   };
 }
 
-// Validates an application-level object; supports transactions and coinbase transactions.
-function validateApplicationObject(value: RecordValue): ApplicationObject {
-  // Must be a "transaction" object by protocol.
+// Validates the stateless shape of an application object.
+function validateApplicationObjectShape(value: RecordValue): ApplicationObject {
   const type = assertString(value.type, "object.object.type");
   if (type !== "transaction") {
     throw new MessageValidationError(
@@ -259,12 +257,10 @@ function validateApplicationObject(value: RecordValue): ApplicationObject {
     );
   }
 
-  // The presence of "height" distinguishes a coinbase transaction.
   if (Object.hasOwn(value, "height")) {
     return validateCoinbaseTransactionMessage(value);
   }
 
-  // Otherwise, validate as a regular transaction.
   return validateTransactionMessage(value);
 }
 
@@ -361,10 +357,8 @@ function validateOutput(value: RecordValue): Output {
   };
 }
 
-
-
-// Dispatches validation by message type and returns a typed protocol union.
-export function validateMessage(value: unknown): AnyMessage {
+// Dispatches stateless wire validation by message type and returns a typed protocol union.
+export function validateWireMessage(value: unknown): AnyMessage {
   const record = assertRecord(value, "Message must be a JSON object");
   const type = assertString(record.type, "message.type");
 
