@@ -1,8 +1,10 @@
 import type {
   AnyMessage,
   ErrorMessage,
+  GetObjectMessage,
   GetPeersMessage,
   HelloMessage,
+  IHaveObjectMessage,
   PeersMessage
 } from "../types.js";
 
@@ -129,6 +131,34 @@ function validateErrorMessage(value: RecordValue): ErrorMessage {
     type: "error",
     name: assertString(value.name, "error.name"),
     description: assertString(value.description, "error.description")
+  };
+}
+
+function validateIhHaveObjectMessage(value: RecordValue): IHaveObjectMessage {
+  assertExactKeys(value, ["type", "objectid"]);
+
+  const objectid = assertString(value.objectid, "ihaveobject.objectid");
+  if (objectid.trim() === "" || objectid.length !== 64 || !/^[a-f0-9]{64}$/.test(objectid)) {
+    throw new MessageValidationError("ihaveobject.objectid must be a 64-character hexadecimal string");
+  }
+
+  return {
+    type: "ihaveobject",
+    objectid
+  };
+}
+
+function validateGetObjectMessage(value: RecordValue): GetObjectMessage {
+  assertExactKeys(value, ["type", "objectid"]);
+
+  const objectid = assertString(value.objectid, "getobject.objectid");
+  if (objectid.trim() === "" || objectid.length !== 64 || !/^[a-f0-9]{64}$/.test(objectid)) {
+    throw new MessageValidationError("getobject.objectid must be a 64-character hexadecimal string");
+  }
+
+  return {
+    type: "getobject",
+    objectid
   };
 }
 
