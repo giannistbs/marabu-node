@@ -162,6 +162,8 @@ function validateGetObjectMessage(value: RecordValue): GetObjectMessage {
   };
 }
 
+
+
 // Dispatches validation by message type and returns a typed protocol union.
 export function validateMessage(value: unknown): AnyMessage {
   const record = assertRecord(value, "Message must be a JSON object");
@@ -174,6 +176,10 @@ export function validateMessage(value: unknown): AnyMessage {
       return validateGetPeersMessage(record);
     case "peers":
       return validatePeersMessage(record);
+    case "ihaveobject":
+      return validateIhHaveObjectMessage(record);
+    case "getobject":
+      return validateGetObjectMessage(record);
     case "error":
       return validateErrorMessage(record);
     default:
