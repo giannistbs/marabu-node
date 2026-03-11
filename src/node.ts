@@ -4,7 +4,7 @@ import type { NodeConfig } from "./config.js";
 import { computeObjectId } from "./hashing.js";
 import { ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
-import type { AnyMessage, ErrorMessage, ObjectMessage } from "./types.js";
+import type { AnyMessage, ErrorMessage, IHaveObjectMessage, ObjectMessage } from "./types.js";
 import {
   ApplicationObjectValidationError,
   validateApplicationObjectState
@@ -305,8 +305,9 @@ export class MarabuNode {
       }
       case "object":
         return await this.handleObjectMessage(socket, message);
-      // case "ihaveobject":
-      //   return await this.handleIHaveObjectMessage(socket, message);
+      case "ihaveobject":
+        await this.handleIHaveObjectMessage(socket, message);
+        return true;
       default: {
         // Reject unexpected validated variants defensively.
         this.sendErrorAndClose(socket, {
@@ -326,19 +327,12 @@ export class MarabuNode {
     try {
       await validateApplicationObjectState(message.object, this.objectStore);
       const objectId = computeObjectId(message.object);
-      let objectExists = false;
-      try {
-        await this.objectStore.get(objectId);
-        objectExists = true;
-      } catch (err) {
-        // error means object does not exist
-        objectExists = false;
-      }
-      if (objectExists) {
+      if (await this.objectStore.has(objectId)) {
         return true;
       }
+
       await this.objectStore.put(objectId, message.object);
-      this.sendIHaveObjectToAllPeers(socket, objectId);
+      this.sendIHaveObjectToAllPeers(objectId);
       return true;
     } catch (error) {
       if (error instanceof ApplicationObjectValidationError) {
@@ -352,6 +346,18 @@ export class MarabuNode {
 
       throw error;
     }
+  }
+
+  private async handleIHaveObjectMessage(
+    socket: net.Socket,
+    message: IHaveObjectMessage
+  ): Promise<void> {
+    const objectId = message.objectid;
+    if (await this.objectStore.has(objectId)) {
+      return;
+    }
+
+    this.sendGetObjectToPeer(socket, objectId);
   }
 
   // Stores newly learned peers and attempts connections when the set expands.
@@ -376,15 +382,13 @@ export class MarabuNode {
     }
   }
 
-  // Sends an ihaveobject message to all connected peers except the one that sent it
-  private sendIHaveObjectToAllPeers(socket: net.Socket, objectId: string): void {
-    for (const peerSocket of this.connections.keys()) {
-      if (peerSocket !== socket) {
-        this.sendMessage(peerSocket, {
-          type: "ihaveobject",
-          objectid: objectId
-        });
-      }
+  // Sends an ihaveobject message to all connected peers
+  private sendIHaveObjectToAllPeers(objectId: string): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "ihaveobject",
+        objectid: objectId
+      });
     }
   }
 

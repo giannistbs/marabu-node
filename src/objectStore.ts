@@ -40,6 +40,15 @@ export class ObjectStore {
     return await database.get(key);
   }
 
+  async has(key: string): Promise<boolean> {
+    try {
+      await this.get(key);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async delete(key: string): Promise<void> {
     const database = this.requireDatabase();
     await database.del(key);
