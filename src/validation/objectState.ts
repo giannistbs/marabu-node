@@ -18,6 +18,16 @@ export class ApplicationObjectValidationError extends Error {
   }
 }
 
+function isMissingReferencedObjectError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    "notFound" in error && error.notFound === true
+  ) || error.name === "NotFoundError";
+}
+
 // Validates protocol rules for an application object that require chain state.
 export async function validateApplicationObjectState(
   object: ApplicationObject,
@@ -48,9 +58,13 @@ async function validateTransactionState(
     let referencedObject: ApplicationObject;
     try {
       referencedObject = await objectLookup.get(input.outpoint.txid);
-    } catch {
+    } catch (error: unknown) {
+      if (!isMissingReferencedObjectError(error)) {
+        throw error;
+      }
+
       throw new ApplicationObjectValidationError(
-        "INVALID_TX_OUTPOINT",
+        "UNKNOWN_OBJECT",
         `Referenced transaction ${input.outpoint.txid} is unknown`
       );
     }
