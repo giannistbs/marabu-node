@@ -77,3 +77,14 @@ export class ObjectStore {
     return this.database;
   }
 }
+
+
+export function isMissingObjectStoreError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    "notFound" in error && error.notFound === true
+  ) || error.name === "NotFoundError";
+}

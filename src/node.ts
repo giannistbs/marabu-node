@@ -2,9 +2,9 @@ import net from "node:net";
 import { encodeMessage, decodeLine } from "./codec.js";
 import type { NodeConfig } from "./config.js";
 import { computeObjectId } from "./hashing.js";
-import { ObjectStore } from "./objectStore.js";
+import { isMissingObjectStoreError, ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
-import type { AnyMessage, ErrorMessage, IHaveObjectMessage, ObjectMessage } from "./types.js";
+import type { AnyMessage, ErrorMessage, GetObjectMessage, IHaveObjectMessage, ObjectMessage } from "./types.js";
 import {
   ApplicationObjectValidationError,
   validateApplicationObjectState
@@ -311,6 +311,8 @@ export class MarabuNode {
       case "ihaveobject":
         await this.handleIHaveObjectMessage(socket, message);
         return true;
+      case "getobject":
+        return await this.handleGetObjectMessage(socket, message);
       default: {
         // Reject unexpected validated variants defensively.
         this.sendErrorAndClose(socket, {
@@ -321,6 +323,25 @@ export class MarabuNode {
         return false;
       }
     }
+  }
+
+  private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
+    const objectId = message.objectid;
+    try {
+      const object = await this.objectStore.get(objectId);
+      this.sendMessage(socket, {
+        type: "object",
+        object
+      });
+    } catch (error: unknown) {
+      if (isMissingObjectStoreError(error)) {
+        return true;
+      }
+
+      throw error;
+    }
+
+    return true;
   }
 
   private async handleObjectMessage(
