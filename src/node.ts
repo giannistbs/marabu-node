@@ -305,6 +305,8 @@ export class MarabuNode {
       }
       case "object":
         return await this.handleObjectMessage(socket, message);
+      // case "ihaveobject":
+      //   return await this.handleIHaveObjectMessage(socket, message);
       default: {
         // Reject unexpected validated variants defensively.
         this.sendErrorAndClose(socket, {
@@ -324,7 +326,15 @@ export class MarabuNode {
     try {
       await validateApplicationObjectState(message.object, this.objectStore);
       const objectId = computeObjectId(message.object);
-      if (await this.objectStore.get(objectId) !== undefined) {
+      let objectExists = false;
+      try {
+        await this.objectStore.get(objectId);
+        objectExists = true;
+      } catch (err) {
+        // error means object does not exist
+        objectExists = false;
+      }
+      if (objectExists) {
         return true;
       }
       await this.objectStore.put(objectId, message.object);
@@ -366,7 +376,7 @@ export class MarabuNode {
     }
   }
 
-  // Sends an ihaveobject message to all connected peers.
+  // Sends an ihaveobject message to all connected peers except the one that sent it
   private sendIHaveObjectToAllPeers(socket: net.Socket, objectId: string): void {
     for (const peerSocket of this.connections.keys()) {
       if (peerSocket !== socket) {
