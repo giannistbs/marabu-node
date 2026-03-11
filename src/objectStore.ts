@@ -10,7 +10,9 @@ interface LevelDatabase {
   close?(): Promise<void> | void;
 }
 
-const Level = LevelModule.default as unknown as new (filePath: string) => LevelDatabase;
+const Level = (
+  typeof LevelModule === "function" ? LevelModule : LevelModule.default
+) as unknown as new (filePath: string) => LevelDatabase;
 
 export class ObjectStore {
   private readonly filePath: string;
