@@ -180,10 +180,18 @@ export class MarabuNode {
               description
             });
           } catch (closeError) {
-            console.error(`[connection ${state.id}] close failed`, closeError);
+            logError(
+              `[connection ${state.id}] close failed: ${
+                closeError instanceof Error ? closeError.message : String(closeError)
+              }`
+            );
           }
 
-          console.error(`[connection ${state.id}] handleData failed`, error);
+          logError(
+            `[connection ${state.id}] handleData failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
           return undefined;
         });
     });
@@ -308,7 +316,7 @@ export class MarabuNode {
         // Merge newly discovered peers asynchronously without risking unhandled rejections.
         void this.handlePeers(message.peers).catch((error: unknown) => {
           const description = error instanceof Error ? error.message : String(error);
-          console.error(`[peers] failed to persist discovered peers: ${description}`);
+          logError(`[peers] failed to persist discovered peers: ${description}`);
         });
         return true;
       }
