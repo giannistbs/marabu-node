@@ -4,6 +4,7 @@ import type { NodeConfig } from "./config.js";
 import { PeerStore } from "./peerStore.js";
 import type { AnyMessage, ErrorMessage } from "./types.js";
 import { MessageValidationError, parsePeerAddress, isValidPeerAddress } from "./validation.js";
+import { log, warn, error as logError } from "./log.js";
 
 interface ConnectionState {
   id: number;
@@ -34,12 +35,12 @@ export class MarabuNode {
     // Track inbound sockets and route them through common connection handling.
     this.server.on("connection", (socket) => {
       const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? 0}`;
-      console.log(`[inbound ${remote}] OK: connected`);
+      log(`[inbound ${remote}] OK: connected`);
       this.handleConnectedSocket(socket, false);
     });
     // Surface server-level failures for observability.
     this.server.on("error", (error) => {
-      console.error(`[server] ${error.message}`);
+      logError(`[server] ${error.message}`);
     });
   }
 
@@ -153,7 +154,7 @@ export class MarabuNode {
     });
 
     socket.on("error", (error) => {
-      console.warn(`[connection ${state.id}] ${error.message}`);
+      warn(`[connection ${state.id}] ${error.message}`);
     });
 
     socket.on("close", () => {
@@ -216,6 +217,8 @@ export class MarabuNode {
             ? error.message
             : "Unable to parse incoming message";
 
+        logError(description)
+
         this.sendErrorAndClose(socket, {
           type: "error",
           name: "INVALID_FORMAT",
@@ -273,7 +276,7 @@ export class MarabuNode {
       }
       case "error": {
         // Remote errors are logged but do not force local disconnect.
-        console.warn(
+        warn(
           `[connection ${state.id}] remote error ${message.name}: ${message.description}`
         );
         return true;
@@ -353,13 +356,13 @@ export class MarabuNode {
 
     try {
       if (!await isValidPeerAddress(peer)) {
-        console.warn(`[outbound ${peer}] FAIL: invalid address`);
+        warn(`[outbound ${peer}] FAIL: invalid address`);
         return;
       }
 
       parsed = await parsePeerAddress(peer);
     } catch (err) {
-      console.warn(`[outbound ${peer}] FAIL: failed to parse address: ${(err as Error).message}`);
+      warn(`[outbound ${peer}] FAIL: failed to parse address: ${(err as Error).message}`);
       return;
     }
 
@@ -375,7 +378,7 @@ export class MarabuNode {
       socket.off("error", onError);
       socket.off("connect", onConnect);
       socket.destroy();
-      console.warn(`[outbound ${peer}] FAIL: connection timed out`);
+      warn(`[outbound ${peer}] FAIL: connection timed out`);
       this.recordFailedAttempt(peer);
     };
 
@@ -385,7 +388,7 @@ export class MarabuNode {
       socket.off("timeout", onTimeout);
       socket.off("connect", onConnect);
       socket.destroy();
-      console.warn(`[outbound ${peer}] FAIL: ${error.message}`);
+      warn(`[outbound ${peer}] FAIL: ${error.message}`);
       this.recordFailedAttempt(peer);
     };
 
@@ -395,7 +398,7 @@ export class MarabuNode {
       socket.off("error", onError);
       socket.off("timeout", onTimeout);
       socket.setTimeout(0);
-      console.log(`[outbound ${peer}] OK: connected`);
+      log(`[outbound ${peer}] OK: connected`);
       this.handleConnectedSocket(socket, true, peer);
       this.failedAttemptsByPeer.delete(peer);
     };
@@ -409,9 +412,9 @@ export class MarabuNode {
     const attempts = (this.failedAttemptsByPeer.get(peer) ?? 0) + 1;
     this.failedAttemptsByPeer.set(peer, attempts);
     if (attempts >= this.maxFailedAttempts) {
-      console.warn(`[outbound ${peer}] removing after ${attempts} failed attempts`);
+      warn(`[outbound ${peer}] removing after ${attempts} failed attempts`);
       this.peerStore.removePeer(peer).catch((err: unknown) => {
-        console.error(`[outbound ${peer}] failed to remove peer: ${err}`);
+        logError(`[outbound ${peer}] failed to remove peer: ${err}`);
       });
       this.failedAttemptsByPeer.delete(peer);
     }

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parsePeerAddress } from "./validation.js";
+import { warn } from "./log.js";
 
 const MAX_PEERS_PER_HOST = 3;
 
@@ -47,7 +48,7 @@ export class PeerStore {
       const nodeError = error as NodeJS.ErrnoException;
       // Warn for malformed files but silently tolerate first-run missing files.
       if (nodeError.code !== "ENOENT") {
-        console.warn(
+        warn(
           `[peer-store] Failed to parse peer file '${this.filePath}': ${nodeError.message}`
         );
       }
