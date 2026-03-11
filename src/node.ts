@@ -324,7 +324,11 @@ export class MarabuNode {
     try {
       await validateApplicationObjectState(message.object, this.objectStore);
       const objectId = computeObjectId(message.object);
+      if (await this.objectStore.get(objectId) !== undefined) {
+        return true;
+      }
       await this.objectStore.put(objectId, message.object);
+      this.sendIHaveObjectToAllPeers(socket, objectId);
       return true;
     } catch (error) {
       if (error instanceof ApplicationObjectValidationError) {
@@ -360,6 +364,26 @@ export class MarabuNode {
       // Hard-close broken sockets to avoid partial protocol state.
       socket.destroy();
     }
+  }
+
+  // Sends an ihaveobject message to all connected peers.
+  private sendIHaveObjectToAllPeers(socket: net.Socket, objectId: string): void {
+    for (const peerSocket of this.connections.keys()) {
+      if (peerSocket !== socket) {
+        this.sendMessage(peerSocket, {
+          type: "ihaveobject",
+          objectid: objectId
+        });
+      }
+    }
+  }
+
+  // Sends a getobject request to a connected peer.
+  private sendGetObjectToPeer(socket: net.Socket, objectId: string): void {
+    this.sendMessage(socket, {
+      type: "getobject",
+      objectid: objectId
+    });
   }
 
   // Sends an error payload and closes the socket in a single operation.
