@@ -1,10 +1,14 @@
 import * as ed from "@noble/ed25519";
+import { sha512 } from "@noble/hashes/sha2.js";
 import { encodeTransactionSigningPayload } from "../codec.js";
 import type { ApplicationObject, ErrorName, Transaction } from "../types.js";
 import {
   isNonNegativeInteger,
   isValidEd25519PublicKey
 } from "./utils.js";
+
+// This exists because @noble/ed25519 needs sha512 plugged in before signatures work.
+ed.hashes.sha512 = sha512;
 
 // Interface for looking up application objects by ID.
 interface ObjectLookup {

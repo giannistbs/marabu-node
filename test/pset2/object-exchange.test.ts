@@ -4,6 +4,7 @@ import { test } from "node:test";
 import canonicalize from "canonicalize";
 import { createHash } from "blake2";
 import * as ed from "@noble/ed25519";
+import { sha512 } from "@noble/hashes/sha2.js";
 import {
   HELLO,
   findMessage,
@@ -12,6 +13,9 @@ import {
   withTestNode,
   type ParsedMessage
 } from "../helpers/harness.js";
+
+// This exists because @noble/ed25519 needs sha512 plugged in before signatures work.
+ed.hashes.sha512 = sha512;
 
 
 function assertNoError(messages: ParsedMessage[], context: string): void {

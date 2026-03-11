@@ -142,11 +142,15 @@ prepare_pset2_vectors() {
     return 1
   fi
   local data
-  if ! data=$(node --import tsx --import "$SCRIPT_DIR/../src/crypto/ed25519.ts" --input-type=module - <<'NODE'
+  if ! data=$(node --import tsx --input-type=module - <<'NODE'
 import canonicalize from "canonicalize";
 import { createHash } from "blake2";
 import * as ed from "@noble/ed25519";
+import { sha512 } from "@noble/hashes/sha2.js";
 import { randomBytes } from "node:crypto";
+
+// This exists because @noble/ed25519 needs sha512 plugged in before signatures work.
+ed.hashes.sha512 = sha512;
 
 const privHex = "11".repeat(32);
 const priv = ed.etc.hexToBytes(privHex);
