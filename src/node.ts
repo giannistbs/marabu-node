@@ -292,8 +292,11 @@ export class MarabuNode {
         return true;
       }
       case "peers": {
-        // Merge newly discovered peers asynchronously.
-        void this.handlePeers(message.peers);
+        // Merge newly discovered peers asynchronously without risking unhandled rejections.
+        void this.handlePeers(message.peers).catch((error: unknown) => {
+          const description = error instanceof Error ? error.message : String(error);
+          console.error(`[peers] failed to persist discovered peers: ${description}`);
+        });
         return true;
       }
       case "error": {
@@ -348,6 +351,7 @@ export class MarabuNode {
     }
   }
 
+  // Handles an ihaveobject message from a peer.
   private async handleIHaveObjectMessage(
     socket: net.Socket,
     message: IHaveObjectMessage
