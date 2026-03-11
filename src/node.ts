@@ -169,11 +169,18 @@ export class MarabuNode {
         .catch((error: unknown) => {
           const description =
             error instanceof Error ? error.message : "Unexpected connection error";
-          this.sendErrorAndClose(socket, {
-            type: "error",
-            name: "INTERNAL_ERROR",
-            description
-          });
+          try {
+            this.sendErrorAndClose(socket, {
+              type: "error",
+              name: "INTERNAL_ERROR",
+              description
+            });
+          } catch (closeError) {
+            console.error(`[connection ${state.id}] close failed`, closeError);
+          }
+
+          console.error(`[connection ${state.id}] handleData failed`, error);
+          return undefined;
         });
     });
 
