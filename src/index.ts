@@ -1,3 +1,4 @@
+import "./crypto/ed25519.js";
 import { loadConfig } from "./config.js";
 import { MarabuNode } from "./node.js";
 import { ObjectStore } from "./objectStore.js";
