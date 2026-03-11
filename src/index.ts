@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { MarabuNode } from "./node.js";
 import { ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
+import { log, error as logError } from "./log.js";
 
 // Bootstraps configuration, networking, and lifecycle handlers for the node.
 async function main(): Promise<void> {
@@ -29,9 +30,9 @@ async function main(): Promise<void> {
 
   // Print key startup metadata for visibility and debugging.
   const listeningPort = node.getListeningPort();
-  console.log(`[startup] Listening on ${config.host}:${listeningPort}`);
-  console.log(`[startup] Peer store path: ${config.peersFile}`);
-  console.log(`[startup] Object store path: ${config.objectStorePath}`);
+  log(`[startup] Listening on ${config.host}:${listeningPort}`);
+  log(`[startup] Peer store path: ${config.peersFile}`);
+  log(`[startup] Object store path: ${config.objectStorePath}`);
 
   // Guard against duplicate shutdown handling from repeated signals.
   let stopping = false;
@@ -41,14 +42,14 @@ async function main(): Promise<void> {
     }
 
     stopping = true;
-    console.log(`[shutdown] Received ${signal}. Stopping node...`);
+    log(`[shutdown] Received ${signal}. Stopping node...`);
 
     try {
       // Stop network activity and release resources cleanly.
       await node.stop();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[shutdown] ${message}`);
+      logError(`[shutdown] ${message}`);
       process.exitCode = 1;
     }
   };
@@ -66,6 +67,6 @@ async function main(): Promise<void> {
 // Crash fast on unrecoverable startup errors.
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[fatal] ${message}`);
+  logError(`[fatal] ${message}`);
   process.exit(1);
 });
