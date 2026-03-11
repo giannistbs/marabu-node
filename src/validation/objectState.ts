@@ -1,8 +1,10 @@
 import * as ed from "@noble/ed25519";
 import { encodeTransactionSigningPayload } from "../codec.js";
 import type { ApplicationObject, ErrorName, Transaction } from "../types.js";
-
-const ED25519_PUBLIC_KEY_PATTERN = /^[a-f0-9]{64}$/;
+import {
+  isNonNegativeInteger,
+  isValidEd25519PublicKey
+} from "./utils.js";
 
 // Interface for looking up application objects by ID.
 interface ObjectLookup {
@@ -73,7 +75,7 @@ function validateOutputs(outputs: unknown): void {
         `${context} output ${index} has an invalid public key`
       );
     }
-    if (!ED25519_PUBLIC_KEY_PATTERN.test(pubkey)) {
+    if (!isValidEd25519PublicKey(pubkey)) {
       throw new ApplicationObjectValidationError(
         "INVALID_FORMAT",
         `${context} output ${index} has an invalid public key`
@@ -207,8 +209,4 @@ function isMissingReferencedObjectError(error: unknown): boolean {
   return (
     "notFound" in error && error.notFound === true
   ) || error.name === "NotFoundError";
-}
-
-function isNonNegativeInteger(value: number): boolean {
-  return Number.isSafeInteger(value) && value >= 0;
 }

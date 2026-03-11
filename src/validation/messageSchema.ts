@@ -14,10 +14,13 @@ import type {
   ApplicationObject,
   OutPoint
 } from "../types.js";
+import {
+  isNonNegativeInteger,
+  isValidEd25519PublicKey
+} from "./utils.js";
 
 const HELLO_VERSION_PATTERN = /^0\.10\.\d+$/;
 const OBJECT_ID_PATTERN = /^[a-f0-9]{64}$/;
-const ED25519_PUBLIC_KEY_PATTERN = /^[a-f0-9]{64}$/;
 const ED25519_SIGNATURE_PATTERN = /^[a-f0-9]{128}$/;
 
 type RecordValue = Record<string, unknown>;
@@ -64,7 +67,7 @@ function assertNumber(value: unknown, fieldName: string): number {
 // Asserts that a field is a non-negative integer.
 function assertNonNegativeInteger(value: unknown, fieldName: string): number {
   const number = assertNumber(value, fieldName);
-  if (!Number.isSafeInteger(number) || number < 0) {
+  if (!isNonNegativeInteger(number)) {
     throw new MessageValidationError(
       `${fieldName} must be a non-negative integer`
     );
@@ -102,12 +105,14 @@ function assertHexString(
 
 // Asserts that a field is a hex-encoded Ed25519 public key.
 function assertPublicKey(value: unknown, fieldName: string): string {
-  return assertHexString(
-    value,
-    fieldName,
-    ED25519_PUBLIC_KEY_PATTERN,
-    "a 32-byte lowercase hexadecimal Ed25519 public key"
-  );
+  const pubkey = assertString(value, fieldName);
+  if (!isValidEd25519PublicKey(pubkey)) {
+    throw new MessageValidationError(
+      `${fieldName} must be a 32-byte lowercase hexadecimal Ed25519 public key`
+    );
+  }
+
+  return pubkey;
 }
 
 // Asserts that a field is a hex-encoded Ed25519 signature.
