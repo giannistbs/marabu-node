@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { parsePeerAddress } from "./validation.js";
+import { parsePeerAddress } from "./validation/peerAddress.js";
 import { warn } from "./log.js";
 
 const MAX_PEERS_PER_HOST = 3;

@@ -1,9 +1,22 @@
 import net from "node:net";
 import { encodeMessage, decodeLine } from "./codec.js";
 import type { NodeConfig } from "./config.js";
+import { computeObjectId } from "./hashing.js";
+import { isMissingObjectStoreError, ObjectStore } from "./objectStore.js";
 import { PeerStore } from "./peerStore.js";
-import type { AnyMessage, ErrorMessage } from "./types.js";
-import { MessageValidationError, parsePeerAddress, isValidPeerAddress } from "./validation.js";
+import type {
+  AnyMessage,
+  ErrorMessage,
+  GetObjectMessage,
+  IHaveObjectMessage,
+  ObjectMessage
+} from "./types.js";
+import {
+  ApplicationObjectValidationError,
+  validateApplicationObjectState
+} from "./validation/objectState.js";
+import { MessageValidationError } from "./validation/messageSchema.js";
+import { parsePeerAddress, isValidPeerAddress } from "./validation/peerAddress.js";
 import { log, warn, error as logError } from "./log.js";
 
 interface ConnectionState {
@@ -12,6 +25,7 @@ interface ConnectionState {
   helloReceived: boolean;
   outbound: boolean;
   peerLabel: string;
+  processing: Promise<void>;
 }
 
 export class MarabuNode {
@@ -29,7 +43,8 @@ export class MarabuNode {
   // Initializes socket server listeners and shared runtime state.
   constructor(
     private readonly config: NodeConfig,
-    private readonly peerStore: PeerStore
+    private readonly peerStore: PeerStore,
+    private readonly objectStore: ObjectStore
   ) {
     this.server = net.createServer();
     // Track inbound sockets and route them through common connection handling.
@@ -109,6 +124,8 @@ export class MarabuNode {
         this.server.close(() => resolve());
       });
     }
+
+    await this.objectStore.close();
   }
 
   // Returns the effective bound port after startup (useful when binding to 0).
@@ -133,7 +150,8 @@ export class MarabuNode {
       buffer: "",
       helloReceived: false,
       outbound,
-      peerLabel: outboundPeer ?? this.describeSocket(socket)
+      peerLabel: outboundPeer ?? this.describeSocket(socket),
+      processing: Promise.resolve()
     };
 
     this.nextConnectionId += 1;
@@ -150,7 +168,32 @@ export class MarabuNode {
     // Accumulate stream data and parse line-delimited messages.
     socket.on("data", (chunk) => {
       const textChunk = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      this.handleData(socket, textChunk);
+      state.processing = state.processing
+        .then(() => this.handleData(socket, textChunk))
+        .catch((error: unknown) => {
+          const description =
+            error instanceof Error ? error.message : "Unexpected connection error";
+          try {
+            this.sendErrorAndClose(socket, {
+              type: "error",
+              name: "INTERNAL_ERROR",
+              description
+            });
+          } catch (closeError) {
+            logError(
+              `[connection ${state.id}] close failed: ${
+                closeError instanceof Error ? closeError.message : String(closeError)
+              }`
+            );
+          }
+
+          logError(
+            `[connection ${state.id}] handleData failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+          return undefined;
+        });
     });
 
     socket.on("error", (error) => {
@@ -181,7 +224,7 @@ export class MarabuNode {
   }
 
   // Buffers stream chunks into complete protocol lines and dispatches messages.
-  private handleData(socket: net.Socket, chunk: string): void {
+  private async handleData(socket: net.Socket, chunk: string): Promise<void> {
     const state = this.connections.get(socket);
     if (state === undefined || socket.destroyed) {
       return;
@@ -228,7 +271,7 @@ export class MarabuNode {
       }
 
       // Dispatch a validated message
-      const keepConnection = this.handleValidatedMessage(socket, state, message);
+      const keepConnection = await this.handleValidatedMessage(socket, state, message);
       // Stops the processing loop if the handler closed the socket or the message was invalid.
       if (!keepConnection) {
         return;
@@ -237,11 +280,11 @@ export class MarabuNode {
   }
 
   // Enforces handshake order and routes validated messages to protocol handlers.
-  private handleValidatedMessage(
+  private async handleValidatedMessage(
     socket: net.Socket,
     state: ConnectionState,
     message: AnyMessage
-  ): boolean {
+  ): Promise<boolean> {
     // Require hello as the first successfully parsed message.
     if (!state.helloReceived) {
       if (message.type !== "hello") {
@@ -270,8 +313,11 @@ export class MarabuNode {
         return true;
       }
       case "peers": {
-        // Merge newly discovered peers asynchronously.
-        void this.handlePeers(message.peers);
+        // Merge newly discovered peers asynchronously without risking unhandled rejections.
+        void this.handlePeers(message.peers).catch((error: unknown) => {
+          const description = error instanceof Error ? error.message : String(error);
+          logError(`[peers] failed to persist discovered peers: ${description}`);
+        });
         return true;
       }
       case "error": {
@@ -281,6 +327,13 @@ export class MarabuNode {
         );
         return true;
       }
+      case "object":
+        return await this.handleObjectMessage(socket, message);
+      case "ihaveobject":
+        await this.handleIHaveObjectMessage(socket, message);
+        return true;
+      case "getobject":
+        return await this.handleGetObjectMessage(socket, message);
       default: {
         // Reject unexpected validated variants defensively.
         this.sendErrorAndClose(socket, {
@@ -291,6 +344,66 @@ export class MarabuNode {
         return false;
       }
     }
+  }
+
+  private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
+    const objectId = message.objectid;
+    try {
+      const object = await this.objectStore.get(objectId);
+      this.sendMessage(socket, {
+        type: "object",
+        object
+      });
+    } catch (error: unknown) {
+      if (isMissingObjectStoreError(error)) {
+        return true;
+      }
+
+      throw error;
+    }
+
+    return true;
+  }
+
+  private async handleObjectMessage(
+    socket: net.Socket,
+    message: ObjectMessage
+  ): Promise<boolean> {
+    try {
+      await validateApplicationObjectState(message.object, this.objectStore);
+      const objectId = computeObjectId(message.object);
+      if (await this.objectStore.has(objectId)) {
+        return true;
+      }
+
+      await this.objectStore.put(objectId, message.object);
+      this.sendIHaveObjectToAllPeers(objectId);
+      return true;
+    } catch (error) {
+      if (error instanceof ApplicationObjectValidationError) {
+        this.sendErrorAndClose(socket, {
+          type: "error",
+          name: error.errorName,
+          description: error.message
+        });
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  // Handles an ihaveobject message from a peer.
+  private async handleIHaveObjectMessage(
+    socket: net.Socket,
+    message: IHaveObjectMessage
+  ): Promise<void> {
+    const objectId = message.objectid;
+    if (await this.objectStore.has(objectId)) {
+      return;
+    }
+
+    this.sendGetObjectToPeer(socket, objectId);
   }
 
   // Stores newly learned peers and attempts connections when the set expands.
@@ -313,6 +426,24 @@ export class MarabuNode {
       // Hard-close broken sockets to avoid partial protocol state.
       socket.destroy();
     }
+  }
+
+  // Sends an ihaveobject message to all connected peers
+  private sendIHaveObjectToAllPeers(objectId: string): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "ihaveobject",
+        objectid: objectId
+      });
+    }
+  }
+
+  // Sends a getobject request to a connected peer.
+  private sendGetObjectToPeer(socket: net.Socket, objectId: string): void {
+    this.sendMessage(socket, {
+      type: "getobject",
+      objectid: objectId
+    });
   }
 
   // Sends an error payload and closes the socket in a single operation.

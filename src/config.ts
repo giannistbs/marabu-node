@@ -18,6 +18,7 @@ export interface NodeConfig {
   version: string;
   agent: string;
   peersFile: string;
+  objectStorePath: string;
   reconnectIntervalMs: number;
   bootstrapPeers: string[];
 }
@@ -30,6 +31,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): NodeConfig {
     version: DEFAULT_VERSION,
     agent: DEFAULT_AGENT,
     peersFile: env.MARABU_PEERS_FILE ?? path.resolve(process.cwd(), "data", "peers.json"),
+    objectStorePath:
+      env.MARABU_OBJECT_STORE_PATH ?? path.resolve(process.cwd(), "data", "object-store"),
     reconnectIntervalMs: Number(
       env.MARABU_RECONNECT_INTERVAL_MS ?? DEFAULT_RECONNECT_INTERVAL_MS
     ),

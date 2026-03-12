@@ -8,6 +8,7 @@ services:
     environment:
       - MARABU_HOST=0.0.0.0
       - MARABU_PEERS_FILE=/app/data/peers.json
+      - MARABU_OBJECT_STORE_PATH=/app/data/object-store
     ports:
       - "${MARABU_PORT:-18018}:${MARABU_PORT:-18018}"
     volumes:
