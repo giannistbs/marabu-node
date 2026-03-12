@@ -110,6 +110,12 @@ export class MarabuNode {
       this.reconnectTimer = null;
     }
 
+    // Collect pending processing promises before destroying sockets so we can
+    // wait for in-flight handlers to settle before closing the object store.
+    const pendingProcessing = Array.from(this.connections.values()).map(
+      (state) => state.processing
+    );
+
     // Destroy all active sockets so in-flight handlers terminate promptly.
     for (const socket of this.connections.keys()) {
       socket.destroy();
@@ -117,6 +123,10 @@ export class MarabuNode {
     this.connections.clear();
     this.outboundSocketsByPeer.clear();
     this.dialingPeers.clear();
+
+    // Wait for any in-flight message handlers to finish before closing the
+    // object store; this prevents LevelDB errors on CI where disk I/O is slow.
+    await Promise.allSettled(pendingProcessing);
 
     if (this.server.listening) {
       // Wait for server close completion to ensure clean shutdown.
