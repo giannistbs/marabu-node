@@ -40,6 +40,7 @@ jobs:
           script: |
             cd /home/ec2-user/marabu/marabu-node
             git fetch origin
+            git reset --hard
             git checkout staging
             git pull origin staging
             docker compose up -d --build
@@ -58,6 +59,7 @@ jobs:
           script: |
             cd /root/marabu-node
             git fetch origin
+            git reset --hard
             git checkout main
             git pull origin main
             docker compose up -d --build
