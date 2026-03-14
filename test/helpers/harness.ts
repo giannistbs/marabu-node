@@ -84,6 +84,10 @@ export async function withTestNode<T>(
     if (started) {
       await node.stop();
     }
+    // Allow residual LevelDB background I/O (compaction, WAL flush) to settle
+    // before removing the temp directory. On CI, slower disk I/O can cause
+    // these operations to outlive objectStore.close().
+    await delay(50);
     await rm(tempDir, { recursive: true, force: true });
   }
 }
@@ -102,12 +106,21 @@ export async function sendLines(options: {
     const messages: ParsedMessage[] = [];
     const buffer = { value: "" };
     let settled = false;
+    let endTimer: ReturnType<typeof setTimeout> | null = null;
 
     const finish = (): void => {
       if (settled) {
         return;
       }
       settled = true;
+      if (endTimer !== null) {
+        clearTimeout(endTimer);
+        endTimer = null;
+      }
+      // Ensure no lingering async activity escapes the test boundary.
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
       resolve(messages);
     };
 
@@ -125,6 +138,13 @@ export async function sendLines(options: {
         return;
       }
       settled = true;
+      if (endTimer !== null) {
+        clearTimeout(endTimer);
+        endTimer = null;
+      }
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
       reject(error);
     });
 
@@ -136,7 +156,7 @@ export async function sendLines(options: {
       for (const line of lines) {
         socket.write(`${line}\n`);
       }
-      setTimeout(() => socket.end(), waitMs);
+      endTimer = setTimeout(() => socket.end(), waitMs);
     });
   });
 }
