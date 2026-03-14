@@ -7,23 +7,6 @@ import {
   isValidEd25519PublicKey
 } from "./utils.js";
 
-// This exists because @noble/ed25519 needs sha512 plugged in before signatures work.
-ed.hashes.sha512 = sha512;
-
-// Interface for looking up application objects by ID.
-interface ObjectLookup {
-  get(key: string): Promise<ApplicationObject>;
-}
-// Error type for application object validation failures that require chain state.
-export class ApplicationObjectValidationError extends Error {
-  constructor(
-    public readonly errorName: ErrorName,
-    message: string
-  ) {
-    super(message);
-    this.name = "ApplicationObjectValidationError";
-  }
-}
 
 // Validates protocol rules for an application object that require chain state.
 export async function validateApplicationObjectState(
@@ -43,12 +26,18 @@ async function validateTransactionState(
   objectLookup: ObjectLookup
 ): Promise<void> {
   const signingPayload = encodeTransactionSigningPayload(transaction);
+
+  // Step 1
   validateOutputs(transaction.outputs);
+
+  // Step 2
   await validateTransactionInputSignatures(
     transaction,
     objectLookup,
     signingPayload
   );
+
+  // Step 3
   await validateTransactionConservation(transaction, objectLookup);
 }
 
@@ -213,4 +202,27 @@ function isMissingReferencedObjectError(error: unknown): boolean {
   return (
     "notFound" in error && error.notFound === true
   ) || error.name === "NotFoundError";
+}
+
+
+
+
+
+// Error type for application object validation failures that require chain state.
+export class ApplicationObjectValidationError extends Error {
+  constructor(
+    public readonly errorName: ErrorName,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApplicationObjectValidationError";
+  }
+}
+
+// This exists because @noble/ed25519 needs sha512 plugged in before signatures work.
+ed.hashes.sha512 = sha512;
+
+// Interface for looking up application objects by ID.
+interface ObjectLookup {
+  get(key: string): Promise<ApplicationObject>;
 }
