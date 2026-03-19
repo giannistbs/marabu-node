@@ -59,95 +59,6 @@ export class MarabuNode {
     });
   }
 
-  // Starts peer discovery, begins listening, and schedules reconnect attempts.
-  async start(): Promise<void> {
-
-    // Leave early if the node is already running.
-    if (this.running) {
-      return;
-    }
-
-    // Load persisted peers before opening outbound connections.
-    await this.peerStore.load();
-
-    // Start the TCP server and fail startup if bind/listen errors occur.
-    await new Promise<void>((resolve, reject) => {
-      const onListening = (): void => {
-        this.server.off("error", onError);
-        resolve();
-      };
-
-      const onError = (error: Error): void => {
-        this.server.off("listening", onListening); // @q: why listen onerror?
-        reject(error);
-      };
-
-      this.server.once("listening", onListening);
-      this.server.once("error", onError);
-      this.server.listen(this.config.port, this.config.host);
-    });
-
-    this.running = true;
-    // Attempt immediate outbound dials instead of waiting for the first interval tick.
-    this.tryConnectDiscoveredPeers();
-
-    // Keep retrying known peers at a fixed interval.
-    this.reconnectTimer = setInterval(() => {
-      this.tryConnectDiscoveredPeers();
-    }, this.config.reconnectIntervalMs);
-  }
-
-  // Stops reconnect loops, tears down sockets, and closes the listening server.
-  async stop(): Promise<void> {
-    if (!this.running) {
-      return;
-    }
-
-    this.running = false;
-
-    if (this.reconnectTimer !== null) {
-      clearInterval(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    // Collect pending processing promises before destroying sockets so we can
-    // wait for in-flight handlers to settle before closing the object store.
-    const pendingProcessing = Array.from(this.connections.values()).map(
-      (state) => state.processing
-    );
-
-    // Destroy all active sockets so in-flight handlers terminate promptly.
-    for (const socket of this.connections.keys()) {
-      socket.destroy();
-    }
-    this.connections.clear();
-    this.outboundSocketsByPeer.clear();
-    this.dialingPeers.clear();
-
-    // Wait for any in-flight message handlers to finish before closing the
-    // object store; this prevents LevelDB errors on CI where disk I/O is slow.
-    await Promise.allSettled(pendingProcessing);
-
-    if (this.server.listening) {
-      // Wait for server close completion to ensure clean shutdown.
-      await new Promise<void>((resolve) => {
-        this.server.close(() => resolve());
-      });
-    }
-
-    await this.objectStore.close();
-  }
-
-  // Returns the effective bound port after startup (useful when binding to 0).
-  getListeningPort(): number {
-    const address = this.server.address();
-    if (address !== null && typeof address === "object") {
-      return address.port;
-    }
-
-    return this.config.port;
-  }
-
   // Registers a new socket, wires event handlers, and kicks off handshake messages.
   private handleConnectedSocket(
     socket: net.Socket,
@@ -567,4 +478,97 @@ export class MarabuNode {
     const port = socket.remotePort ?? 0;
     return `${host}:${port}`;
   }
+
+
+
+
+  // Starts peer discovery, begins listening, and schedules reconnect attempts.
+  async start(): Promise<void> {
+
+    // Leave early if the node is already running.
+    if (this.running) {
+      return;
+    }
+
+    // Load persisted peers before opening outbound connections.
+    await this.peerStore.load();
+
+    // Start the TCP server and fail startup if bind/listen errors occur.
+    await new Promise<void>((resolve, reject) => {
+      const onListening = (): void => {
+        this.server.off("error", onError);
+        resolve();
+      };
+
+      const onError = (error: Error): void => {
+        this.server.off("listening", onListening); // @q: why listen onerror?
+        reject(error);
+      };
+
+      this.server.once("listening", onListening);
+      this.server.once("error", onError);
+      this.server.listen(this.config.port, this.config.host);
+    });
+
+    this.running = true;
+    // Attempt immediate outbound dials instead of waiting for the first interval tick.
+    this.tryConnectDiscoveredPeers();
+
+    // Keep retrying known peers at a fixed interval.
+    this.reconnectTimer = setInterval(() => {
+      this.tryConnectDiscoveredPeers();
+    }, this.config.reconnectIntervalMs);
+  }
+
+  // Stops reconnect loops, tears down sockets, and closes the listening server.
+  async stop(): Promise<void> {
+    if (!this.running) {
+      return;
+    }
+
+    this.running = false;
+
+    if (this.reconnectTimer !== null) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Collect pending processing promises before destroying sockets so we can
+    // wait for in-flight handlers to settle before closing the object store.
+    const pendingProcessing = Array.from(this.connections.values()).map(
+      (state) => state.processing
+    );
+
+    // Destroy all active sockets so in-flight handlers terminate promptly.
+    for (const socket of this.connections.keys()) {
+      socket.destroy();
+    }
+    this.connections.clear();
+    this.outboundSocketsByPeer.clear();
+    this.dialingPeers.clear();
+
+    // Wait for any in-flight message handlers to finish before closing the
+    // object store; this prevents LevelDB errors on CI where disk I/O is slow.
+    await Promise.allSettled(pendingProcessing);
+
+    if (this.server.listening) {
+      // Wait for server close completion to ensure clean shutdown.
+      await new Promise<void>((resolve) => {
+        this.server.close(() => resolve());
+      });
+    }
+
+    await this.objectStore.close();
+  }
+
+  // Returns the effective bound port after startup (useful when binding to 0).
+  getListeningPort(): number {
+    const address = this.server.address();
+    if (address !== null && typeof address === "object") {
+      return address.port;
+    }
+
+    return this.config.port;
+  }
+
 }
