@@ -40,23 +40,261 @@ export class MarabuNode {
   private nextConnectionId = 1;
   private running = false;
 
-  // Initializes socket server listeners and shared runtime state.
-  constructor(
-    private readonly config: NodeConfig,
-    private readonly peerStore: PeerStore,
-    private readonly objectStore: ObjectStore
-  ) {
-    this.server = net.createServer();
-    // Track inbound sockets and route them through common connection handling.
-    this.server.on("connection", (socket) => {
-      const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? 0}`;
-      log(`[inbound ${remote}] OK: connected`);
-      this.handleConnectedSocket(socket, false);
+
+  /*//////////////////////////////////////////////////////////////
+                            HANDLER FUNCTIONS
+  //////////////////////////////////////////////////////////////*/
+
+  // Enforces handshake order and routes validated messages to protocol handlers.
+  private async handleValidatedMessage(
+    socket: net.Socket,
+    state: ConnectionState,
+    message: AnyMessage
+  ): Promise<boolean> {
+    // Require hello as the first successfully parsed message.
+    if (!state.helloReceived) {
+      if (message.type !== "hello") {
+        this.sendErrorAndClose(socket, {
+          type: "error",
+          name: "INVALID_HANDSHAKE",
+          description: "Expected hello as first valid message"
+        });
+        return false;
+      }
+
+      state.helloReceived = true;
+      return true;
+    }
+
+    switch (message.type) {
+      case "hello":
+        // Ignore duplicate hellos after handshake completion.
+        return true;
+      case "getpeers": {
+        // Reply with the current peer snapshot on demand.
+        this.sendMessage(socket, {
+          type: "peers",
+          peers: this.peerStore.getPeers()
+        });
+        return true;
+      }
+      case "peers": {
+        // Merge newly discovered peers asynchronously without risking unhandled rejections.
+        void this.handlePeers(message.peers).catch((error: unknown) => {
+          const description = error instanceof Error ? error.message : String(error);
+          logError(`[peers] failed to persist discovered peers: ${description}`);
+        });
+        return true;
+      }
+      case "error": {
+        // Remote errors are logged but do not force local disconnect.
+        warn(
+          `[connection ${state.id}] remote error ${message.name}: ${message.description}`
+        );
+        return true;
+      }
+      case "object":
+        return await this.handleObjectMessage(socket, message);
+      case "ihaveobject":
+        await this.handleIHaveObjectMessage(socket, message);
+        return true;
+      case "getobject":
+        return await this.handleGetObjectMessage(socket, message);
+      default: {
+        // Reject unexpected validated variants defensively.
+        this.sendErrorAndClose(socket, {
+          type: "error",
+          name: "INVALID_FORMAT",
+          description: "Unsupported message type"
+        });
+        return false;
+      }
+    }
+  }
+
+  // Handles a getobject message from a peer.
+  private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
+    const objectId = message.objectid;
+    try {
+      const object = await this.objectStore.get(objectId);
+      this.sendMessage(socket, {
+        type: "object",
+        object
+      });
+    } catch (error: unknown) {
+      if (isMissingObjectStoreError(error)) {
+        return true;
+      }
+
+      throw error;
+    }
+
+    return true;
+  }
+
+  // Handles an object message from a peer.
+  private async handleObjectMessage(
+    socket: net.Socket,
+    message: ObjectMessage
+  ): Promise<boolean> {
+    try {
+      await validateApplicationObjectState(message.object, this.objectStore);
+      const objectId = computeObjectId(message.object);
+      if (await this.objectStore.has(objectId)) {
+        return true;
+      }
+
+      await this.objectStore.put(objectId, message.object);
+      this.sendIHaveObjectToAllPeers(objectId);
+      return true;
+    } catch (error) {
+      if (error instanceof ApplicationObjectValidationError) {
+        this.sendErrorAndClose(socket, {
+          type: "error",
+          name: error.errorName,
+          description: error.message
+        });
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  // Handles an ihaveobject message from a peer.
+  private async handleIHaveObjectMessage(
+    socket: net.Socket,
+    message: IHaveObjectMessage
+  ): Promise<void> {
+    const objectId = message.objectid;
+    if (await this.objectStore.has(objectId)) {
+      return;
+    }
+
+    this.sendGetObjectToPeer(socket, objectId);
+  }
+
+  // Stores newly learned peers and attempts connections when the set expands.
+  private async handlePeers(peers: string[]): Promise<void> {
+    const changed = await this.peerStore.mergeAndPersist(peers);
+    if (changed) {
+      this.tryConnectDiscoveredPeers();
+    }
+  }
+
+  // Sends an ihaveobject message to all connected peers
+  private sendIHaveObjectToAllPeers(objectId: string): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "ihaveobject",
+        objectid: objectId
+      });
+    }
+  }
+
+  // Sends a getobject request to a connected peer.
+  private sendGetObjectToPeer(socket: net.Socket, objectId: string): void {
+    this.sendMessage(socket, {
+      type: "getobject",
+      objectid: objectId
     });
-    // Surface server-level failures for observability.
-    this.server.on("error", (error) => {
-      logError(`[server] ${error.message}`);
+  }
+
+
+
+
+
+  /*//////////////////////////////////////////////////////////////
+                            NODE METHODS
+  //////////////////////////////////////////////////////////////*/
+
+  // Starts peer discovery, begins listening, and schedules reconnect attempts.
+  async start(): Promise<void> {
+
+    // Leave early if the node is already running.
+    if (this.running) {
+      return;
+    }
+
+    // Load persisted peers before opening outbound connections.
+    await this.peerStore.load();
+
+    // Start the TCP server and fail startup if bind/listen errors occur.
+    await new Promise<void>((resolve, reject) => {
+      const onListening = (): void => {
+        this.server.off("error", onError);
+        resolve();
+      };
+
+      const onError = (error: Error): void => {
+        this.server.off("listening", onListening); // @q: why listen onerror?
+        reject(error);
+      };
+
+      this.server.once("listening", onListening);
+      this.server.once("error", onError);
+      this.server.listen(this.config.port, this.config.host);
     });
+
+    this.running = true;
+    // Attempt immediate outbound dials instead of waiting for the first interval tick.
+    this.tryConnectDiscoveredPeers();
+
+    // Keep retrying known peers at a fixed interval.
+    this.reconnectTimer = setInterval(() => {
+      this.tryConnectDiscoveredPeers();
+    }, this.config.reconnectIntervalMs);
+  }
+
+  // Stops reconnect loops, tears down sockets, and closes the listening server.
+  async stop(): Promise<void> {
+    if (!this.running) {
+      return;
+    }
+
+    this.running = false;
+
+    if (this.reconnectTimer !== null) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Collect pending processing promises before destroying sockets so we can
+    // wait for in-flight handlers to settle before closing the object store.
+    const pendingProcessing = Array.from(this.connections.values()).map(
+      (state) => state.processing
+    );
+
+    // Destroy all active sockets so in-flight handlers terminate promptly.
+    for (const socket of this.connections.keys()) {
+      socket.destroy();
+    }
+    this.connections.clear();
+    this.outboundSocketsByPeer.clear();
+    this.dialingPeers.clear();
+
+    // Wait for any in-flight message handlers to finish before closing the
+    // object store; this prevents LevelDB errors on CI where disk I/O is slow.
+    await Promise.allSettled(pendingProcessing);
+
+    if (this.server.listening) {
+      // Wait for server close completion to ensure clean shutdown.
+      await new Promise<void>((resolve) => {
+        this.server.close(() => resolve());
+      });
+    }
+
+    await this.objectStore.close();
+  }
+
+  // Returns the effective bound port after startup (useful when binding to 0).
+  getListeningPort(): number {
+    const address = this.server.address();
+    if (address !== null && typeof address === "object") {
+      return address.port;
+    }
+
+    return this.config.port;
   }
 
   // Registers a new socket, wires event handlers, and kicks off handshake messages.
@@ -200,141 +438,6 @@ export class MarabuNode {
     }
   }
 
-  // Enforces handshake order and routes validated messages to protocol handlers.
-  private async handleValidatedMessage(
-    socket: net.Socket,
-    state: ConnectionState,
-    message: AnyMessage
-  ): Promise<boolean> {
-    // Require hello as the first successfully parsed message.
-    if (!state.helloReceived) {
-      if (message.type !== "hello") {
-        this.sendErrorAndClose(socket, {
-          type: "error",
-          name: "INVALID_HANDSHAKE",
-          description: "Expected hello as first valid message"
-        });
-        return false;
-      }
-
-      state.helloReceived = true;
-      return true;
-    }
-
-    switch (message.type) {
-      case "hello":
-        // Ignore duplicate hellos after handshake completion.
-        return true;
-      case "getpeers": {
-        // Reply with the current peer snapshot on demand.
-        this.sendMessage(socket, {
-          type: "peers",
-          peers: this.peerStore.getPeers()
-        });
-        return true;
-      }
-      case "peers": {
-        // Merge newly discovered peers asynchronously without risking unhandled rejections.
-        void this.handlePeers(message.peers).catch((error: unknown) => {
-          const description = error instanceof Error ? error.message : String(error);
-          logError(`[peers] failed to persist discovered peers: ${description}`);
-        });
-        return true;
-      }
-      case "error": {
-        // Remote errors are logged but do not force local disconnect.
-        warn(
-          `[connection ${state.id}] remote error ${message.name}: ${message.description}`
-        );
-        return true;
-      }
-      case "object":
-        return await this.handleObjectMessage(socket, message);
-      case "ihaveobject":
-        await this.handleIHaveObjectMessage(socket, message);
-        return true;
-      case "getobject":
-        return await this.handleGetObjectMessage(socket, message);
-      default: {
-        // Reject unexpected validated variants defensively.
-        this.sendErrorAndClose(socket, {
-          type: "error",
-          name: "INVALID_FORMAT",
-          description: "Unsupported message type"
-        });
-        return false;
-      }
-    }
-  }
-
-  private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
-    const objectId = message.objectid;
-    try {
-      const object = await this.objectStore.get(objectId);
-      this.sendMessage(socket, {
-        type: "object",
-        object
-      });
-    } catch (error: unknown) {
-      if (isMissingObjectStoreError(error)) {
-        return true;
-      }
-
-      throw error;
-    }
-
-    return true;
-  }
-
-  private async handleObjectMessage(
-    socket: net.Socket,
-    message: ObjectMessage
-  ): Promise<boolean> {
-    try {
-      await validateApplicationObjectState(message.object, this.objectStore);
-      const objectId = computeObjectId(message.object);
-      if (await this.objectStore.has(objectId)) {
-        return true;
-      }
-
-      await this.objectStore.put(objectId, message.object);
-      this.sendIHaveObjectToAllPeers(objectId);
-      return true;
-    } catch (error) {
-      if (error instanceof ApplicationObjectValidationError) {
-        this.sendErrorAndClose(socket, {
-          type: "error",
-          name: error.errorName,
-          description: error.message
-        });
-        return false;
-      }
-
-      throw error;
-    }
-  }
-
-  // Handles an ihaveobject message from a peer.
-  private async handleIHaveObjectMessage(
-    socket: net.Socket,
-    message: IHaveObjectMessage
-  ): Promise<void> {
-    const objectId = message.objectid;
-    if (await this.objectStore.has(objectId)) {
-      return;
-    }
-
-    this.sendGetObjectToPeer(socket, objectId);
-  }
-
-  // Stores newly learned peers and attempts connections when the set expands.
-  private async handlePeers(peers: string[]): Promise<void> {
-    const changed = await this.peerStore.mergeAndPersist(peers);
-    if (changed) {
-      this.tryConnectDiscoveredPeers();
-    }
-  }
-
   // Encodes and writes a protocol message unless the socket is already closed.
   private sendMessage(socket: net.Socket, message: AnyMessage): void {
     if (socket.destroyed || socket.writableEnded) {
@@ -348,56 +451,12 @@ export class MarabuNode {
       socket.destroy();
     }
   }
-
-  // Sends an ihaveobject message to all connected peers
-  private sendIHaveObjectToAllPeers(objectId: string): void {
-    for (const socket of this.connections.keys()) {
-      this.sendMessage(socket, {
-        type: "ihaveobject",
-        objectid: objectId
-      });
-    }
+  // Formats a socket's remote endpoint for logs and state labels.
+  private describeSocket(socket: net.Socket): string {
+    const host = socket.remoteAddress ?? "unknown-host";
+    const port = socket.remotePort ?? 0;
+    return `${host}:${port}`;
   }
-
-  // Sends a getobject request to a connected peer.
-  private sendGetObjectToPeer(socket: net.Socket, objectId: string): void {
-    this.sendMessage(socket, {
-      type: "getobject",
-      objectid: objectId
-    });
-  }
-
-  // Sends an error payload and closes the socket in a single operation.
-  private sendErrorAndClose(socket: net.Socket, errorMessage: ErrorMessage): void {
-    if (socket.destroyed || socket.writableEnded) {
-      return;
-    }
-
-    try {
-      socket.end(encodeMessage(errorMessage));
-    } catch {
-      // Fall back to destroy when graceful close cannot be written.
-      socket.destroy();
-    }
-  }
-
-  // Attempts outbound connections for all known peers not already connected.
-  private tryConnectDiscoveredPeers(): void {
-    if (!this.running) {
-      return;
-    }
-
-    const peers: string[] = this.peerStore.getPeers();
-    for (const peer of peers) {
-      // Skip peers already connected or currently in dial progress.
-      if (this.outboundSocketsByPeer.has(peer) || this.dialingPeers.has(peer)) {
-        continue;
-      }
-
-      this.connectToPeer(peer);
-    }
-  }
-
   // Dials a peer and wires timeout/error/connect handlers for lifecycle tracking.
   private async connectToPeer(peer: string): Promise<void> {
 
@@ -460,6 +519,7 @@ export class MarabuNode {
     socket.once("connect", onConnect);
   }
 
+  // Records a failed outbound attempt and removes the peer if too many attempts have failed.
   private recordFailedAttempt(peer: string): void {
     const attempts = (this.failedAttemptsByPeer.get(peer) ?? 0) + 1;
     this.failedAttemptsByPeer.set(peer, attempts);
@@ -472,103 +532,60 @@ export class MarabuNode {
     }
   }
 
-  // Formats a socket's remote endpoint for logs and state labels.
-  private describeSocket(socket: net.Socket): string {
-    const host = socket.remoteAddress ?? "unknown-host";
-    const port = socket.remotePort ?? 0;
-    return `${host}:${port}`;
-  }
-
-
-
-
-  // Starts peer discovery, begins listening, and schedules reconnect attempts.
-  async start(): Promise<void> {
-
-    // Leave early if the node is already running.
-    if (this.running) {
+  // Sends an error payload and closes the socket in a single operation.
+  private sendErrorAndClose(socket: net.Socket, errorMessage: ErrorMessage): void {
+    if (socket.destroyed || socket.writableEnded) {
       return;
     }
 
-    // Load persisted peers before opening outbound connections.
-    await this.peerStore.load();
-
-    // Start the TCP server and fail startup if bind/listen errors occur.
-    await new Promise<void>((resolve, reject) => {
-      const onListening = (): void => {
-        this.server.off("error", onError);
-        resolve();
-      };
-
-      const onError = (error: Error): void => {
-        this.server.off("listening", onListening); // @q: why listen onerror?
-        reject(error);
-      };
-
-      this.server.once("listening", onListening);
-      this.server.once("error", onError);
-      this.server.listen(this.config.port, this.config.host);
-    });
-
-    this.running = true;
-    // Attempt immediate outbound dials instead of waiting for the first interval tick.
-    this.tryConnectDiscoveredPeers();
-
-    // Keep retrying known peers at a fixed interval.
-    this.reconnectTimer = setInterval(() => {
-      this.tryConnectDiscoveredPeers();
-    }, this.config.reconnectIntervalMs);
+    try {
+      socket.end(encodeMessage(errorMessage));
+    } catch {
+      // Fall back to destroy when graceful close cannot be written.
+      socket.destroy();
+    }
   }
 
-  // Stops reconnect loops, tears down sockets, and closes the listening server.
-  async stop(): Promise<void> {
+  // Attempts outbound connections for all known peers not already connected.
+  private tryConnectDiscoveredPeers(): void {
     if (!this.running) {
       return;
     }
 
-    this.running = false;
+    const peers: string[] = this.peerStore.getPeers();
+    for (const peer of peers) {
+      // Skip peers already connected or currently in dial progress.
+      if (this.outboundSocketsByPeer.has(peer) || this.dialingPeers.has(peer)) {
+        continue;
+      }
 
-    if (this.reconnectTimer !== null) {
-      clearInterval(this.reconnectTimer);
-      this.reconnectTimer = null;
+      this.connectToPeer(peer);
     }
-
-    // Collect pending processing promises before destroying sockets so we can
-    // wait for in-flight handlers to settle before closing the object store.
-    const pendingProcessing = Array.from(this.connections.values()).map(
-      (state) => state.processing
-    );
-
-    // Destroy all active sockets so in-flight handlers terminate promptly.
-    for (const socket of this.connections.keys()) {
-      socket.destroy();
-    }
-    this.connections.clear();
-    this.outboundSocketsByPeer.clear();
-    this.dialingPeers.clear();
-
-    // Wait for any in-flight message handlers to finish before closing the
-    // object store; this prevents LevelDB errors on CI where disk I/O is slow.
-    await Promise.allSettled(pendingProcessing);
-
-    if (this.server.listening) {
-      // Wait for server close completion to ensure clean shutdown.
-      await new Promise<void>((resolve) => {
-        this.server.close(() => resolve());
-      });
-    }
-
-    await this.objectStore.close();
   }
 
-  // Returns the effective bound port after startup (useful when binding to 0).
-  getListeningPort(): number {
-    const address = this.server.address();
-    if (address !== null && typeof address === "object") {
-      return address.port;
-    }
 
-    return this.config.port;
+
+  /*//////////////////////////////////////////////////////////////
+                            CONSTRUCTOR
+  //////////////////////////////////////////////////////////////*/
+
+  // Initializes socket server listeners and shared runtime state.
+  constructor(
+    private readonly config: NodeConfig,
+    private readonly peerStore: PeerStore,
+    private readonly objectStore: ObjectStore
+  ) {
+    this.server = net.createServer();
+    // Track inbound sockets and route them through common connection handling.
+    this.server.on("connection", (socket) => {
+      const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? 0}`;
+      log(`[inbound ${remote}] OK: connected`);
+      this.handleConnectedSocket(socket, false);
+    });
+    // Surface server-level failures for observability.
+    this.server.on("error", (error) => {
+      logError(`[server] ${error.message}`);
+    });
   }
 
 }
