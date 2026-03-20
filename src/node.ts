@@ -34,7 +34,7 @@ export class MarabuNode {
   private readonly outboundSocketsByPeer = new Map<string, net.Socket>();
   private readonly dialingPeers = new Set<string>();
   private readonly failedAttemptsByPeer = new Map<string, number>();
-  private readonly maxFailedAttempts = 5;
+  private readonly maxFailedAttempts = 3;
 
   private reconnectTimer: NodeJS.Timeout | null = null;
   private nextConnectionId = 1;
