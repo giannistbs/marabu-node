@@ -15,136 +15,43 @@ import type {
   OutPoint
 } from "../types.js";
 import {
+  ValidationError,
   isNonNegativeInteger,
-  isValidEd25519PublicKey
+  isValidEd25519PublicKey,
+  type RecordValue,
+  assertRecord,
+  assertString,
+  assertNonNegativeInteger,
+  assertExactKeys
 } from "./utils.js";
 
 const HELLO_VERSION_PATTERN = /^0\.10\.\d+$/;
 const OBJECT_ID_PATTERN = /^[a-f0-9]{64}$/;
 const ED25519_SIGNATURE_PATTERN = /^[a-f0-9]{128}$/;
 
-type RecordValue = Record<string, unknown>;
 
-export class MessageValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "MessageValidationError";
-  }
-}
+// Dispatches stateless wire validation by message type and returns a typed protocol union.
+export function validateWireMessage(value: unknown): AnyMessage {
+  const record = assertRecord(value, "Message must be a JSON object");
+  const type = assertString(record.type, "message.type");
 
-// Type guard for plain JSON object payloads.
-function isRecord(value: unknown): value is RecordValue {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// Asserts that a value is a plain object before field-level validation.
-function assertRecord(value: unknown, errorMessage: string): RecordValue {
-  if (!isRecord(value)) {
-    throw new MessageValidationError(errorMessage);
-  }
-
-  return value;
-}
-
-// Asserts that a field is a string and returns the narrowed value.
-function assertString(value: unknown, fieldName: string): string {
-  if (typeof value !== "string") {
-    throw new MessageValidationError(`${fieldName} must be a string`);
-  }
-
-  return value;
-}
-
-// Asserts that a field is a finite number and returns the narrowed value.
-function assertNumber(value: unknown, fieldName: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new MessageValidationError(`${fieldName} must be a number`);
-  }
-
-  return value;
-}
-
-// Asserts that a field is a non-negative integer.
-function assertNonNegativeInteger(value: unknown, fieldName: string): number {
-  const number = assertNumber(value, fieldName);
-  if (!isNonNegativeInteger(number)) {
-    throw new MessageValidationError(
-      `${fieldName} must be a non-negative integer`
-    );
-  }
-
-  return number;
-}
-
-// Asserts that a field is a 64-character lowercase hexadecimal object id.
-function assertObjectId(value: unknown, fieldName: string): string {
-  const objectId = assertString(value, fieldName);
-  if (!OBJECT_ID_PATTERN.test(objectId)) {
-    throw new MessageValidationError(
-      `${fieldName} must be a 64-character hexadecimal string`
-    );
-  }
-
-  return objectId;
-}
-
-// Asserts that a field is a lowercase hexadecimal string of the exact length.
-function assertHexString(
-  value: unknown,
-  fieldName: string,
-  pattern: RegExp,
-  description: string
-): string {
-  const hexString = assertString(value, fieldName);
-  if (!pattern.test(hexString)) {
-    throw new MessageValidationError(`${fieldName} must be ${description}`);
-  }
-
-  return hexString;
-}
-
-// Asserts that a field is a hex-encoded Ed25519 public key.
-function assertPublicKey(value: unknown, fieldName: string): string {
-  const pubkey = assertString(value, fieldName);
-  if (!isValidEd25519PublicKey(pubkey)) {
-    throw new MessageValidationError(
-      `${fieldName} must be a 32-byte lowercase hexadecimal Ed25519 public key`
-    );
-  }
-
-  return pubkey;
-}
-
-// Asserts that a field is a hex-encoded Ed25519 signature.
-function assertSignature(value: unknown, fieldName: string): string {
-  return assertHexString(
-    value,
-    fieldName,
-    ED25519_SIGNATURE_PATTERN,
-    "a 64-byte lowercase hexadecimal Ed25519 signature"
-  );
-}
-
-// Enforces an exact key set with required and optional fields.
-function assertExactKeys(
-  objectValue: RecordValue,
-  requiredKeys: string[],
-  optionalKeys: string[] = []
-): void {
-  // Reject unknown keys to keep message formats strict.
-  const allowed = new Set<string>([...requiredKeys, ...optionalKeys]);
-
-  for (const key of Object.keys(objectValue)) {
-    if (!allowed.has(key)) {
-      throw new MessageValidationError(`Unexpected key '${key}'`);
-    }
-  }
-
-  // Require every expected key to be explicitly present.
-  for (const key of requiredKeys) {
-    if (!Object.hasOwn(objectValue, key)) {
-      throw new MessageValidationError(`Missing required key '${key}'`);
-    }
+  switch (type) {
+    case "hello":
+      return validateHelloMessage(record);
+    case "getpeers":
+      return validateGetPeersMessage(record);
+    case "peers":
+      return validatePeersMessage(record);
+    case "ihaveobject":
+      return validateIhHaveObjectMessage(record);
+    case "getobject":
+      return validateGetObjectMessage(record);
+    case "error":
+      return validateErrorMessage(record);
+    case "object":
+      return validateObjectMessage(record);
+    default:
+      throw new MessageValidationError("Unknown message type");
   }
 }
 
@@ -362,27 +269,68 @@ function validateOutput(value: RecordValue): Output {
   };
 }
 
-// Dispatches stateless wire validation by message type and returns a typed protocol union.
-export function validateWireMessage(value: unknown): AnyMessage {
-  const record = assertRecord(value, "Message must be a JSON object");
-  const type = assertString(record.type, "message.type");
 
-  switch (type) {
-    case "hello":
-      return validateHelloMessage(record);
-    case "getpeers":
-      return validateGetPeersMessage(record);
-    case "peers":
-      return validatePeersMessage(record);
-    case "ihaveobject":
-      return validateIhHaveObjectMessage(record);
-    case "getobject":
-      return validateGetObjectMessage(record);
-    case "error":
-      return validateErrorMessage(record);
-    case "object":
-      return validateObjectMessage(record);
-    default:
-      throw new MessageValidationError("Unknown message type");
+    /*//////////////////////////////////////////////////////////////
+                            SPECIFIC HELPERS
+    //////////////////////////////////////////////////////////////*/
+
+
+// Asserts that a field is a 64-character lowercase hexadecimal object id.
+function assertObjectId(value: unknown, fieldName: string): string {
+  const objectId = assertString(value, fieldName);
+  if (!OBJECT_ID_PATTERN.test(objectId)) {
+    throw new MessageValidationError(
+      `${fieldName} must be a 64-character hexadecimal string`
+    );
+  }
+
+  return objectId;
+}
+
+// Asserts that a field is a hex-encoded Ed25519 signature.
+function assertSignature(value: unknown, fieldName: string): string {
+  return assertHexString(
+    value,
+    fieldName,
+    ED25519_SIGNATURE_PATTERN,
+    "a 64-byte lowercase hexadecimal Ed25519 signature"
+  );
+}
+
+// Asserts that a field is a lowercase hexadecimal string matching a given pattern.
+function assertHexString(
+  value: unknown,
+  fieldName: string,
+  pattern: RegExp,
+  description: string
+): string {
+  const hexString = assertString(value, fieldName);
+  if (!pattern.test(hexString)) {
+    throw new MessageValidationError(`${fieldName} must be ${description}`);
+  }
+
+  return hexString;
+}
+
+// Asserts that a field is a hex-encoded Ed25519 public key.
+function assertPublicKey(value: unknown, fieldName: string): string {
+  const pubkey = assertString(value, fieldName);
+  if (!isValidEd25519PublicKey(pubkey)) {
+    throw new MessageValidationError(
+      `${fieldName} must be a 32-byte lowercase hexadecimal Ed25519 public key`
+    );
+  }
+
+  return pubkey;
+}
+
+    /*//////////////////////////////////////////////////////////////
+                                 ERROR TYPES
+    //////////////////////////////////////////////////////////////*/
+
+export class MessageValidationError extends ValidationError {
+  constructor(message: string) {
+    super(message);
+    this.name = "MessageValidationError";
   }
 }
