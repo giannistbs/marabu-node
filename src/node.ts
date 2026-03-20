@@ -35,6 +35,7 @@ export class MarabuNode {
   private readonly dialingPeers = new Set<string>();
   private readonly failedAttemptsByPeer = new Map<string, number>();
   private readonly maxFailedAttempts = 3;
+  private readonly maxConnectedPeers = 125;
 
   private reconnectTimer: NodeJS.Timeout | null = null;
   private nextConnectionId = 1;
@@ -303,6 +304,12 @@ export class MarabuNode {
     outbound: boolean,
     outboundPeer: string | null = null
   ): void {
+
+    if(this.connections.size >= this.maxConnectedPeers) {
+      socket.destroy();
+      return
+    }
+
     // Create per-connection parsing and handshake state.
     const state: ConnectionState = {
       id: this.nextConnectionId,
