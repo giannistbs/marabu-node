@@ -1,9 +1,9 @@
 import net from "node:net";
-import { encodeMessage, decodeLine } from "./codec.js";
+import { encodeMessage, decodeLine } from "./protocol/codec.js";
 import type { NodeConfig } from "./config.js";
-import { computeObjectId } from "./hashing.js";
-import { isMissingObjectStoreError, ObjectStore } from "./objectStore.js";
-import { PeerStore } from "./peerStore.js";
+import { computeObjectId } from "./protocol/hashing.js";
+import { isMissingObjectStoreError, ObjectStore } from "./store/objectStore.js";
+import { PeerStore } from "./store/peerStore.js";
 import type {
   AnyMessage,
   ErrorMessage,

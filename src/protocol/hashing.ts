@@ -1,4 +1,4 @@
-import { ApplicationObject } from "./types.js";
+import { ApplicationObject } from "../types.js";
 import { encodeApplicationObject } from "./codec.js";
 import blake2 from "blake2";
 

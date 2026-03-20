@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.js";
 import { MarabuNode } from "./node.js";
-import { ObjectStore } from "./objectStore.js";
-import { PeerStore } from "./peerStore.js";
+import { ObjectStore } from "./store/objectStore.js";
+import { PeerStore } from "./store/peerStore.js";
 import { log, error as logError } from "./log.js";
 
 // Bootstraps configuration, networking, and lifecycle handlers for the node.

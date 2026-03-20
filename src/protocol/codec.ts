@@ -1,9 +1,9 @@
 import canonicalizeImport from "canonicalize";
-import type { AnyMessage, ApplicationObject, Transaction } from "./types.js";
+import type { AnyMessage, ApplicationObject, Transaction } from "../types.js";
 import {
   MessageValidationError,
   validateWireMessage
-} from "./validation/messageSchema.js";
+} from "../validation/messageSchema.js";
 
 const canonicalize = canonicalizeImport as unknown as (
   input: unknown
@@ -27,7 +27,7 @@ export function encodeApplicationObject(object: ApplicationObject): string {
     if (typeof encoded !== "string") {
       throw new Error("Unable to canonicalize message");
     }
-  
+
     return `${encoded}`;
 }
 

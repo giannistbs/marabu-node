@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ObjectStore } from "../src/objectStore.js";
+import { ObjectStore } from "../src/store/objectStore.js";
 import type { ApplicationObject } from "../src/types.js";
 
 test("ObjectStore round-trips application objects via level-ts", async () => {

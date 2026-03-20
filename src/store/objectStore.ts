@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import LevelModule from "level-ts/dist/Level.js";
-import type { ApplicationObject } from "./types.js";
+import type { ApplicationObject } from "../types.js";
 
 interface LevelDatabase {
   put(key: string, value: ApplicationObject): Promise<void>;

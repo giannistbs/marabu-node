@@ -4,8 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MarabuNode } from "../../src/node.js";
-import { PeerStore } from "../../src/peerStore.js";
-import { ObjectStore } from "../../src/objectStore.js";
+import { PeerStore } from "../../src/store/peerStore.js";
+import { ObjectStore } from "../../src/store/objectStore.js";
 import type { NodeConfig } from "../../src/config.js";
 
 export type ParsedMessage = Record<string, unknown> | { __raw: string };
