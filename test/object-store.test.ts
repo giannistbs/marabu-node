@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ObjectStore } from "../src/store/objectStore.js";
-import type { ApplicationObject } from "../src/types.js";
+import type { ApplicationObject, UtxoSnapshot } from "../src/types.js";
 
-test("ObjectStore round-trips application objects via level-ts", async () => {
+test("ObjectStore round-trips application objects with the default API", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "marabu-object-store-"));
   const storePath = join(tempDir, "db");
   const store = new ObjectStore(storePath);
@@ -25,6 +25,41 @@ test("ObjectStore round-trips application objects via level-ts", async () => {
 
     assert.deepEqual(loaded, object);
     assert.equal(await store.has("coinbase"), true);
+  } finally {
+    await store.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("ObjectStore stores UTXO snapshots separately from application objects", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "marabu-object-store-"));
+  const storePath = join(tempDir, "db");
+  const store = new ObjectStore(storePath);
+  const objectId = "shared-id";
+  const object: ApplicationObject = {
+    type: "transaction",
+    height: 1,
+    outputs: [{ pubkey: "22".repeat(32), value: 75 }]
+  };
+  const snapshot: UtxoSnapshot = {
+    entries: [
+      {
+        outpoint: { txid: objectId, index: 0 },
+        output: { pubkey: "22".repeat(32), value: 75 }
+      }
+    ]
+  };
+
+  await store.open();
+
+  try {
+    await store.put(objectId, object);
+    await store.putUtxo(objectId, snapshot);
+
+    assert.deepEqual(await store.get(objectId), object);
+    assert.deepEqual(await store.getUtxo(objectId), snapshot);
+    assert.equal(await store.has(objectId), true);
+    assert.equal(await store.hasUtxo(objectId), true);
   } finally {
     await store.close();
     await rm(tempDir, { recursive: true, force: true });
