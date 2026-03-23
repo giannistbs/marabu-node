@@ -12,7 +12,8 @@ import type {
   Input,
   Output,
   ApplicationObject,
-  OutPoint
+  OutPoint,
+  Block
 } from "../types.js";
 import {
   ValidationError,
@@ -234,6 +235,65 @@ function validateTransactionMessage(value: RecordValue): Transaction {
         assertRecord(output, `transaction.outputs[${index}] must be a JSON object`)
       )
     )
+  };
+}
+
+// Validates a standard transaction (must include both inputs and outputs).
+function validateBlockMessage(value: RecordValue): Block {
+  assertExactKeys(value, ["type", "T", "created", "nonce", "previd", "txids"], ["miner", "note", "studentids"]);
+  if (value.type !== "block") {
+    throw new MessageValidationError(
+      "block.type must be 'block'"
+    );
+  }
+
+  if (!Array.isArray(value.txids)) {
+    throw new MessageValidationError("block.txids must be an array");
+  }
+
+  if (
+    typeof value.studentids !== "undefined" &&
+    (!Array.isArray(value.studentids) || value.studentids.length > 10)
+  ) {
+    throw new MessageValidationError("block.studentids must have a maximum of 10 elements");
+  }
+
+  if (
+    typeof value.miner !== "undefined" &&
+    (typeof value.miner !== "string" || value.miner.length > 128)
+  ) {
+    throw new MessageValidationError("block.miner must have a maximum of 128 characters");
+  }
+
+  if (
+    typeof value.note !== "undefined" &&
+    (typeof value.note !== "string" || value.note.length > 128)
+  ) {
+    throw new MessageValidationError("block.note must have a maximum of 128 characters");
+  }
+
+  const T = assertString(value.T, "block.T");
+  if (T !== "00000000abc00000000000000000000000000000000000000000000000000000") {
+    throw new MessageValidationError("block.T is incorrect");
+  }
+
+  const created = assertNonNegativeInteger(value.created, "block.created");
+  const nonce = assertString(value.nonce, "block.nonce");
+  const previd =
+    value.previd === null
+      ? null
+      : assertString(value.previd, "block.previd");
+  const txids = value.txids.map((txid, index) =>
+    assertObjectId(txid, `block.txids[${index}]`)
+  );
+
+  return {
+    type: "block",
+    T,
+    created,
+    nonce,
+    previd,
+    txids,
   };
 }
 
