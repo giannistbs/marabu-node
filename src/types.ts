@@ -59,6 +59,29 @@ export interface IHaveObjectMessage {
 //   blockid: string;
 // }
 
+export interface Block {
+  T: string;
+  created: number;
+  miner?: string; // up to 128 characters
+  nonce: string;
+  note?: string; // up to 128 characters
+  studentids?: string[]; // up to 10 ids
+  previd: string | null;
+  txids: string[];
+  type: "block";
+}
+
+export const GENESIS_BLOCK = {
+  T: "00000000abc00000000000000000000000000000000000000000000000000000",
+  created: 1771159355,
+  miner: "Marabu",
+  nonce: "00dd82159556175752d9ba7349df67bddd237b59183747383f7b720e85c32347",
+  note: "Financial Times 2026-02-13: Crypto's battle with the banks is splitting Trump's base",
+  previd: null,
+  txids: [],
+  type: "block"
+} as const;
+
 export interface ErrorMessage {
   type: "error";
   name: string;
@@ -80,6 +103,15 @@ export interface Output {
   value: number;
 }
 
+export interface UtxoEntry {
+  outpoint: OutPoint;
+  output: Output;
+}
+
+export interface UtxoSnapshot {
+  entries: UtxoEntry[];
+}
+
 export interface Transaction {
   type: "transaction";
   inputs: Input[];
@@ -92,7 +124,7 @@ export interface CoinbaseTransaction {
   outputs: Output[];
 }
 
-export type ApplicationObject = Transaction | CoinbaseTransaction; // for now.. 
+export type ApplicationObject = Transaction | CoinbaseTransaction | Block; 
 
 export interface ObjectMessage {
   type: "object";
