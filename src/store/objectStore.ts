@@ -23,9 +23,90 @@ export class ObjectStore {
   private readonly filePath: string;
   private database: LevelDatabase | null = null;
 
-  constructor(filePath: string) {
-    this.filePath = filePath;
+
+  /*//////////////////////////////////////////////////////////////
+                          OBJECT METHODS
+  //////////////////////////////////////////////////////////////*/
+
+  // Convenience alias for putObject using the raw key.
+  async put(key: string, object: ApplicationObject): Promise<void> {
+    await this.putObject(key, object);
   }
+
+  // Persists an application object under its prefixed object ID key.
+  async putObject(objectId: string, object: ApplicationObject): Promise<void> {
+    await this.putValue(this.objectKey(objectId), object);
+  }
+
+  // Convenience alias for getObject using the raw key.
+  async get(key: string): Promise<ApplicationObject> {
+    return await this.getObject(key);
+  }
+
+  // Retrieves and type-checks an application object by its object ID.
+  async getObject(objectId: string): Promise<ApplicationObject> {
+    const value = await this.getValue(this.objectKey(objectId));
+    if (!isApplicationObject(value)) {
+      throw new Error(`Stored value for ${objectId} is not an application object`);
+    }
+
+    return value;
+  }
+
+  // Convenience alias for hasObject using the raw key.
+  async has(key: string): Promise<boolean> {
+    return await this.hasObject(key);
+  }
+
+  // Returns true if an application object exists for the given object ID.
+  async hasObject(objectId: string): Promise<boolean> {
+    return await this.hasValue(this.objectKey(objectId));
+  }
+
+  // Convenience alias for deleteObject using the raw key.
+  async delete(key: string): Promise<void> {
+    await this.deleteObject(key);
+  }
+
+  // Removes the application object entry for the given object ID.
+  async deleteObject(objectId: string): Promise<void> {
+    await this.deleteValue(this.objectKey(objectId));
+  }
+
+
+  /*//////////////////////////////////////////////////////////////
+                           UTXO METHODS
+  //////////////////////////////////////////////////////////////*/
+
+  // Persists a UTXO snapshot associated with the given block ID.
+  async putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void> {
+    await this.putValue(this.utxoKey(blockId), snapshot);
+  }
+
+  // Retrieves and type-checks the UTXO snapshot for the given block ID.
+  async getUtxo(blockId: string): Promise<UtxoSnapshot> {
+    const value = await this.getValue(this.utxoKey(blockId));
+    if (!isUtxoSnapshot(value)) {
+      throw new Error(`Stored value for ${blockId} is not a UTXO snapshot`);
+    }
+
+    return value;
+  }
+
+  // Returns true if a UTXO snapshot exists for the given block ID.
+  async hasUtxo(blockId: string): Promise<boolean> {
+    return await this.hasValue(this.utxoKey(blockId));
+  }
+
+  // Removes the UTXO snapshot entry for the given block ID.
+  async deleteUtxo(blockId: string): Promise<void> {
+    await this.deleteValue(this.utxoKey(blockId));
+  }
+
+
+  /*//////////////////////////////////////////////////////////////
+                          STORE LIFECYCLE
+  //////////////////////////////////////////////////////////////*/
 
   // Opens the backing Level database once during process startup.
   async open(): Promise<void> {
@@ -37,64 +118,7 @@ export class ObjectStore {
     this.database = new Level(this.filePath);
   }
 
-  async put(key: string, object: ApplicationObject): Promise<void> {
-    await this.putObject(key, object);
-  }
-
-  async putObject(objectId: string, object: ApplicationObject): Promise<void> {
-    await this.putValue(this.objectKey(objectId), object);
-  }
-
-  async get(key: string): Promise<ApplicationObject> {
-    return await this.getObject(key);
-  }
-
-  async getObject(objectId: string): Promise<ApplicationObject> {
-    const value = await this.getValue(this.objectKey(objectId));
-    if (!isApplicationObject(value)) {
-      throw new Error(`Stored value for ${objectId} is not an application object`);
-    }
-
-    return value;
-  }
-
-  async has(key: string): Promise<boolean> {
-    return await this.hasObject(key);
-  }
-
-  async hasObject(objectId: string): Promise<boolean> {
-    return await this.hasValue(this.objectKey(objectId));
-  }
-
-  async delete(key: string): Promise<void> {
-    await this.deleteObject(key);
-  }
-
-  async deleteObject(objectId: string): Promise<void> {
-    await this.deleteValue(this.objectKey(objectId));
-  }
-
-  async putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void> {
-    await this.putValue(this.utxoKey(blockId), snapshot);
-  }
-
-  async getUtxo(blockId: string): Promise<UtxoSnapshot> {
-    const value = await this.getValue(this.utxoKey(blockId));
-    if (!isUtxoSnapshot(value)) {
-      throw new Error(`Stored value for ${blockId} is not a UTXO snapshot`);
-    }
-
-    return value;
-  }
-
-  async hasUtxo(blockId: string): Promise<boolean> {
-    return await this.hasValue(this.utxoKey(blockId));
-  }
-
-  async deleteUtxo(blockId: string): Promise<void> {
-    await this.deleteValue(this.utxoKey(blockId));
-  }
-
+  // Nulls out the database reference and closes it if the driver supports it.
   async close(): Promise<void> {
     if (this.database === null) {
       return;
@@ -108,6 +132,12 @@ export class ObjectStore {
     }
   }
 
+
+  /*//////////////////////////////////////////////////////////////
+                        PRIVATE HELPERS
+  //////////////////////////////////////////////////////////////*/
+
+  // Asserts the database is open and returns it; throws otherwise.
   private requireDatabase(): LevelDatabase {
     if (this.database === null) {
       throw new Error("Object store has not been opened");
@@ -116,16 +146,19 @@ export class ObjectStore {
     return this.database;
   }
 
+  // Writes any StoredValue under the given raw key.
   private async putValue(key: string, value: StoredValue): Promise<void> {
     const database = this.requireDatabase();
     await database.put(key, value);
   }
 
+  // Reads any StoredValue by its raw key.
   private async getValue(key: string): Promise<StoredValue> {
     const database = this.requireDatabase();
     return await database.get(key);
   }
 
+  // Returns true if the raw key exists, swallowing NotFoundError.
   private async hasValue(key: string): Promise<boolean> {
     try {
       await this.getValue(key);
@@ -135,21 +168,34 @@ export class ObjectStore {
     }
   }
 
+  // Deletes the entry at the given raw key.
   private async deleteValue(key: string): Promise<void> {
     const database = this.requireDatabase();
     await database.del(key);
   }
 
+  // Produces the namespaced LevelDB key for an application object.
   private objectKey(objectId: string): string {
     return `${OBJECT_PREFIX}${objectId}`;
   }
 
+  // Produces the namespaced LevelDB key for a UTXO snapshot.
   private utxoKey(blockId: string): string {
     return `${UTXO_PREFIX}${blockId}`;
+  }
+
+
+  /*//////////////////////////////////////////////////////////////
+                           CONSTRUCTOR
+  //////////////////////////////////////////////////////////////*/
+
+  constructor(filePath: string) {
+    this.filePath = filePath;
   }
 }
 
 
+// Returns true for LevelDB "not found" errors across driver versions.
 export function isMissingObjectStoreError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -160,6 +206,7 @@ export function isMissingObjectStoreError(error: unknown): boolean {
   ) || error.name === "NotFoundError";
 }
 
+// Type guard: checks that a stored value is a transaction or block object.
 function isApplicationObject(value: StoredValue): value is ApplicationObject {
   return (
     typeof value === "object" &&
@@ -172,6 +219,7 @@ function isApplicationObject(value: StoredValue): value is ApplicationObject {
   );
 }
 
+// Type guard: checks that a stored value is a UTXO snapshot with an entries array.
 function isUtxoSnapshot(value: StoredValue): value is UtxoSnapshot {
   return (
     typeof value === "object" &&
