@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { ObjectStore } from "../src/store/objectStore.js";
 import type { ApplicationObject, UtxoSnapshot } from "../src/types.js";
 
-test("ObjectStore round-trips application objects with the default API", async () => {
+test("ObjectStore round-trips application objects with the object API", async () => {
   const tempDir = await mkdtemp(join(tmpdir(), "marabu-object-store-"));
   const storePath = join(tempDir, "db");
   const store = new ObjectStore(storePath);
@@ -19,12 +19,12 @@ test("ObjectStore round-trips application objects with the default API", async (
   await store.open();
 
   try {
-    await store.put("coinbase", object);
+    await store.putObject("coinbase", object);
 
-    const loaded = await store.get("coinbase");
+    const loaded = await store.getObject("coinbase");
 
     assert.deepEqual(loaded, object);
-    assert.equal(await store.has("coinbase"), true);
+    assert.equal(await store.hasObject("coinbase"), true);
   } finally {
     await store.close();
     await rm(tempDir, { recursive: true, force: true });
@@ -53,12 +53,12 @@ test("ObjectStore stores UTXO snapshots separately from application objects", as
   await store.open();
 
   try {
-    await store.put(objectId, object);
+    await store.putObject(objectId, object);
     await store.putUtxo(objectId, snapshot);
 
-    assert.deepEqual(await store.get(objectId), object);
+    assert.deepEqual(await store.getObject(objectId), object);
     assert.deepEqual(await store.getUtxo(objectId), snapshot);
-    assert.equal(await store.has(objectId), true);
+    assert.equal(await store.hasObject(objectId), true);
     assert.equal(await store.hasUtxo(objectId), true);
   } finally {
     await store.close();

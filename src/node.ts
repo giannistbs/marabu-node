@@ -116,7 +116,7 @@ export class MarabuNode {
   private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
     const objectId = message.objectid;
     try {
-      const object = await this.objectStore.get(objectId);
+      const object = await this.objectStore.getObject(objectId);
       this.sendMessage(socket, {
         type: "object",
         object
@@ -140,11 +140,11 @@ export class MarabuNode {
     try {
       await validateApplicationObjectState(message.object, this.objectStore);
       const objectId = computeObjectId(message.object);
-      if (await this.objectStore.has(objectId)) {
+      if (await this.objectStore.hasObject(objectId)) {
         return true;
       }
 
-      await this.objectStore.put(objectId, message.object);
+      await this.objectStore.putObject(objectId, message.object);
       this.sendIHaveObjectToAllPeers(objectId);
       return true;
     } catch (error) {
@@ -167,7 +167,7 @@ export class MarabuNode {
     message: IHaveObjectMessage
   ): Promise<void> {
     const objectId = message.objectid;
-    if (await this.objectStore.has(objectId)) {
+    if (await this.objectStore.hasObject(objectId)) {
       return;
     }
 

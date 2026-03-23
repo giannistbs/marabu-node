@@ -1,7 +1,7 @@
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { encodeTransactionSigningPayload } from "../protocol/codec.js";
-import type { ApplicationObject, ErrorName, Transaction } from "../types.js";
+import type { ApplicationObject, Block, ErrorName, Transaction } from "../types.js";
 import {
   isNonNegativeInteger,
   isValidEd25519PublicKey
@@ -13,11 +13,51 @@ export async function validateApplicationObjectState(
   object: ApplicationObject,
   objectLookup: ObjectLookup
 ): Promise<void> {
-  if ("height" in object) {
-    validateOutputs(object.outputs);
-    return;
+
+  if (object.type === "transaction") {
+    if ("height" in object) {
+      validateOutputs(object.outputs);
+      return;
+    }
+    await validateTransactionState(object, objectLookup);
+  } else if (object.type === "block") {
+    await validateBlockState(object, objectLookup);
   }
-  await validateTransactionState(object, objectLookup);
+  return;
+
+}
+
+// Validates input signatures and referenced outputs for a transaction.
+async function validateBlockState(
+  block: Block,
+  objectLookup: ObjectLookup
+): Promise<void> {
+
+  ensureTarget(block); // ensure the target is our specified hardcoded target (00000000abc00000000000000000000000000000000000000000000000000000) send INVALID_FORMAT if error
+
+
+  await checkPOW(); // should send INVALID_BLOCK_POW if error
+
+
+  await checkTxsExistence() // this should also send a message to get missing TXids. after waiting for a while if you dont receive them, send back UNFINDABLE_OBJECT if unfound
+
+  await validateTxsAndUpdateUTXO() // this should also send UNFINDABLE_OBJECT if a tx can not be validated
+
+  // in checkCoinbaseTxs we should check that at most there is one coinbase and it should be at index 0 in txids, send INVALID_BLOCK_COINBASE otherwise
+  await checkCoinbaseTxs()
+
+  await checkCoinbaseTxSpending() // the coinbase tx cannot be spent in another tx in the same block, send INVALID_TX_OUTPOINT otherwise\
+
+  // this should check that the coinbase tx has no inputs, exactly one output and a height, for the height and the public key they should be of the valid format
+  // verify the law of conservation for th ecoinbase tx, the output of the coinbase tx can be at most the sum of tx fees in the block + the block reward. the block reward
+  // is a constant of 50*10^12 picabu. the fee of the tx is the sum of its input values minus the sum of its output values. send INVALID_BLOCK_COINBASE error otherwise
+  await validateCoinbaseTx()
+
+
+
+
+
+
 }
 
 // Validates input signatures and referenced outputs for a transaction.
@@ -107,7 +147,7 @@ async function validateTransactionInputSignatures(
 
     let referencedObject: ApplicationObject;
     try {
-      referencedObject = await objectLookup.get(input.outpoint.txid);
+      referencedObject = await objectLookup.getObject(input.outpoint.txid);
     } catch (error: unknown) {
       if (!isMissingReferencedObjectError(error)) {
         throw error;
@@ -157,7 +197,7 @@ async function validateTransactionConservation(
 
     let referencedObject: ApplicationObject;
     try {
-      referencedObject = await objectLookup.get(input.outpoint.txid);
+      referencedObject = await objectLookup.getObject(input.outpoint.txid);
     } catch (error: unknown) {
       if (!isMissingReferencedObjectError(error)) {
         throw error;
@@ -224,5 +264,5 @@ ed.hashes.sha512 = sha512;
 
 // Interface for looking up application objects by ID.
 interface ObjectLookup {
-  get(key: string): Promise<ApplicationObject>;
+  getObject(key: string): Promise<ApplicationObject>;
 }
