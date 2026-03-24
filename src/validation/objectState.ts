@@ -62,10 +62,22 @@ async function validateBlockState(
   await validateCoinbaseTx()
 
 
+}
 
+async function validateTxsAndUpdateUTXO() {
+  // first we should initialize the utxo set to the utxo set of the parent (previd)
 
+  // then for each tx in the block:
+    //  we should validate it as per the existing logic -> validateTransactionState()
+    // additionally we should check that each input of the tx corresponds to an output that is present in the utxo set
+    // ie the output exists and it has not been spent yet
+    // if the output is not present, send back INVALID_TX_OUTPOINT
 
+    // then we should apply the tx by removing the UTXOs that are spent and adding the UTXOs that are created
+  
+  // we repeat the previous for all txs using the updated utxo set
 
+  // for now we can assume that the previous block was sent to as beforehand
 }
 
   /*//////////////////////////////////////////////////////////////
