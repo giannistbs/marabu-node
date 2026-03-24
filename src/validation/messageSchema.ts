@@ -285,14 +285,30 @@ function validateBlockMessage(value: RecordValue): Block {
     assertObjectId(txid, `block.txids[${index}]`)
   );
 
-  return {
+  const block: Block = {
     type: "block",
     T,
     created,
     nonce,
     previd,
-    txids,
+    txids
   };
+
+  if (typeof value.miner !== "undefined") {
+    block.miner = value.miner;
+  }
+
+  if (typeof value.note !== "undefined") {
+    block.note = value.note;
+  }
+
+  if (typeof value.studentids !== "undefined") {
+    block.studentids = value.studentids.map((id, index) =>
+      assertString(id, `block.studentids[${index}]`)
+    );
+  }
+
+  return block;
 }
 
 // Validates a single transaction input (references an outpoint and signature).
