@@ -80,7 +80,7 @@ export const GENESIS_BLOCK = {
   previd: null,
   txids: [],
   type: "block"
-} as const;
+} as Block;
 
 export interface ErrorMessage {
   type: "error";

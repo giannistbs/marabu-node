@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import LevelModule from "level-ts/dist/Level.js";
-import type { ApplicationObject, UtxoSnapshot } from "../types.js";
+import { ApplicationObject, UtxoSnapshot, GENESIS_BLOCK} from "../types.js";
+import { computeObjectId } from "../protocol/hashing.js";
 
 const OBJECT_PREFIX = "object:";
 const UTXO_PREFIX = "utxo:";
@@ -96,6 +97,7 @@ export class ObjectStore {
 
     await mkdir(dirname(this.filePath), { recursive: true });
     this.database = new Level(this.filePath);
+    await this.seedGenesis();
   }
 
   // Nulls out the database reference and closes it if the driver supports it.
@@ -111,6 +113,16 @@ export class ObjectStore {
       await database.close();
     }
   }
+
+  private async seedGenesis(): Promise<void> {
+    const GENESIS_ID = computeObjectId(GENESIS_BLOCK)
+    const hasGenesis = await this.hasObject(GENESIS_ID);
+    if (!hasGenesis) {
+      await this.putObject(GENESIS_ID, GENESIS_BLOCK);
+      await this.putUtxo(GENESIS_ID, { entries: [] });
+    }
+  }
+  
 
 
   /*//////////////////////////////////////////////////////////////
