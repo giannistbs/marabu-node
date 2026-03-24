@@ -252,27 +252,6 @@ function validateBlockMessage(value: RecordValue): Block {
     throw new MessageValidationError("block.txids must be an array");
   }
 
-  if (
-    typeof value.studentids !== "undefined" &&
-    (!Array.isArray(value.studentids) || value.studentids.length > 10)
-  ) {
-    throw new MessageValidationError("block.studentids must have a maximum of 10 elements");
-  }
-
-  if (
-    typeof value.miner !== "undefined" &&
-    (typeof value.miner !== "string" || value.miner.length > 128)
-  ) {
-    throw new MessageValidationError("block.miner must have a maximum of 128 characters");
-  }
-
-  if (
-    typeof value.note !== "undefined" &&
-    (typeof value.note !== "string" || value.note.length > 128)
-  ) {
-    throw new MessageValidationError("block.note must have a maximum of 128 characters");
-  }
-
   const T = assertString(value.T, "block.T");
   if (T !== "00000000abc00000000000000000000000000000000000000000000000000000") {
     throw new MessageValidationError("block.T is incorrect");
@@ -294,15 +273,29 @@ function validateBlockMessage(value: RecordValue): Block {
     txids
   };
 
+  // Check and add optional human-readable miner identifier, capped at 128 characters.
   if (typeof value.miner !== "undefined") {
-    block.miner = value.miner;
+    const miner = assertString(value.miner, "block.miner");
+    if (miner.length > 128) {
+      throw new MessageValidationError("block.miner must have a maximum of 128 characters");
+    }
+    block.miner = miner;
   }
 
+  // Check and add optional note attached to the block, capped at 128 characters.
   if (typeof value.note !== "undefined") {
-    block.note = value.note;
+    const note = assertString(value.note, "block.note");
+    if (note.length > 128) {
+      throw new MessageValidationError("block.note must have a maximum of 128 characters");
+    }
+    block.note = note;
   }
 
+  // Check and add optional list of student IDs associated with this block, capped at 10 entries.
   if (typeof value.studentids !== "undefined") {
+    if (!Array.isArray(value.studentids) || value.studentids.length > 10) {
+      throw new MessageValidationError("block.studentids must have a maximum of 10 elements");
+    }
     block.studentids = value.studentids.map((id, index) =>
       assertString(id, `block.studentids[${index}]`)
     );
