@@ -164,17 +164,18 @@ function validateObjectMessage(value: RecordValue): ObjectMessage {
 // Validates the stateless shape of an application object.
 function validateApplicationObjectShape(value: RecordValue): ApplicationObject {
   const type = assertString(value.type, "object.object.type");
-  if (type !== "transaction") {
+
+  if (Object.hasOwn(value, "height") && type === 'transaction') {
+    return validateCoinbaseTransactionMessage(value);
+  } else if (type === 'transaction') {
+    return validateTransactionMessage(value);
+  } else if (type === 'block') {
+    return validateBlockMessage(value);
+  } else {
     throw new MessageValidationError(
-      "object.object.type must be 'transaction'"
+      "object.object.type must be 'transaction' or 'block'"
     );
   }
-
-  if (Object.hasOwn(value, "height")) {
-    return validateCoinbaseTransactionMessage(value);
-  }
-
-  return validateTransactionMessage(value);
 }
 
 // Validates a coinbase transaction (height present, only outputs, no inputs).
@@ -279,10 +280,7 @@ function validateBlockMessage(value: RecordValue): Block {
 
   const created = assertNonNegativeInteger(value.created, "block.created");
   const nonce = assertString(value.nonce, "block.nonce");
-  const previd =
-    value.previd === null
-      ? null
-      : assertString(value.previd, "block.previd");
+  const previd = assertString(value.previd, "block.previd");
   const txids = value.txids.map((txid, index) =>
     assertObjectId(txid, `block.txids[${index}]`)
   );
