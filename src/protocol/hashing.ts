@@ -2,7 +2,7 @@ import { ApplicationObject } from "../types.js";
 import { encodeApplicationObject } from "./codec.js";
 import blake2 from "blake2";
 
-// Computes the object ID of an application object by canonicalizing and hashing the object.
+// Computes the object ID (TxId or BlockId) of an application object by canonicalizing and hashing the object.
 export function computeObjectId(object: ApplicationObject): string {
   // Create a new Blake2s hash object.
   const h = blake2.createHash("blake2s");
