@@ -8,6 +8,10 @@ import {
 } from "./utils.js";
 
 
+  /*//////////////////////////////////////////////////////////////
+                        PUBLIC VALIDATION
+  //////////////////////////////////////////////////////////////*/
+
 // Validates protocol rules for an application object that require chain state.
 export async function validateApplicationObjectState(
   object: ApplicationObject,
@@ -26,6 +30,10 @@ export async function validateApplicationObjectState(
   return;
 
 }
+
+  /*//////////////////////////////////////////////////////////////
+                        BLOCK VALIDATION
+  //////////////////////////////////////////////////////////////*/
 
 // Validates input signatures and referenced outputs for a transaction.
 async function validateBlockState(
@@ -59,6 +67,10 @@ async function validateBlockState(
 
 
 }
+
+  /*//////////////////////////////////////////////////////////////
+                     TRANSACTION VALIDATION
+  //////////////////////////////////////////////////////////////*/
 
 // Validates input signatures and referenced outputs for a transaction.
 async function validateTransactionState(
@@ -234,6 +246,10 @@ async function validateTransactionConservation(
 }
 
 
+  /*//////////////////////////////////////////////////////////////
+                        PRIVATE HELPERS
+  //////////////////////////////////////////////////////////////*/
+
 function isMissingReferencedObjectError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -247,6 +263,10 @@ function isMissingReferencedObjectError(error: unknown): boolean {
 
 
 
+
+  /*//////////////////////////////////////////////////////////////
+                            TYPES
+  //////////////////////////////////////////////////////////////*/
 
 // Error type for application object validation failures that require chain state.
 export class ApplicationObjectValidationError extends Error {
