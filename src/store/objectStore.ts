@@ -28,19 +28,9 @@ export class ObjectStore {
                           OBJECT METHODS
   //////////////////////////////////////////////////////////////*/
 
-  // Convenience alias for putObject using the raw key.
-  async put(key: string, object: ApplicationObject): Promise<void> {
-    await this.putObject(key, object);
-  }
-
   // Persists an application object under its prefixed object ID key.
   async putObject(objectId: string, object: ApplicationObject): Promise<void> {
     await this.putValue(this.objectKey(objectId), object);
-  }
-
-  // Convenience alias for getObject using the raw key.
-  async get(key: string): Promise<ApplicationObject> {
-    return await this.getObject(key);
   }
 
   // Retrieves and type-checks an application object by its object ID.
@@ -53,19 +43,9 @@ export class ObjectStore {
     return value;
   }
 
-  // Convenience alias for hasObject using the raw key.
-  async has(key: string): Promise<boolean> {
-    return await this.hasObject(key);
-  }
-
   // Returns true if an application object exists for the given object ID.
   async hasObject(objectId: string): Promise<boolean> {
     return await this.hasValue(this.objectKey(objectId));
-  }
-
-  // Convenience alias for deleteObject using the raw key.
-  async delete(key: string): Promise<void> {
-    await this.deleteObject(key);
   }
 
   // Removes the application object entry for the given object ID.
