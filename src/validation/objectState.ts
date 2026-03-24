@@ -324,4 +324,5 @@ ed.hashes.sha512 = sha512;
 // Interface for looking up application objects by ID.
 interface ObjectLookup {
   getObject(key: string): Promise<ApplicationObject>;
+  getUtxo(blockId: string): Promise<UtxoSnapshot>
 }
