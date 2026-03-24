@@ -106,6 +106,7 @@ async function validateTransactionState(
 }
 
 
+// Validates that each output has a valid Ed25519 pubkey and a non-negative integer value.
 function validateOutputs(outputs: unknown): void {
   const context = "transaction";
   if (!Array.isArray(outputs)) {
@@ -124,6 +125,7 @@ function validateOutputs(outputs: unknown): void {
       );
     }
 
+    // Cast to a record so we can access pubkey/value without a concrete type.
     const outputRecord = output as Record<string, unknown>;
     const pubkey = outputRecord.pubkey;
     if (typeof pubkey !== "string") {
@@ -132,6 +134,7 @@ function validateOutputs(outputs: unknown): void {
         `${context} output ${index} has an invalid public key`
       );
     }
+    // Checks the key is a valid 32-byte hex-encoded Ed25519 public key.
     if (!isValidEd25519PublicKey(pubkey)) {
       throw new ApplicationObjectValidationError(
         "INVALID_FORMAT",
@@ -146,6 +149,7 @@ function validateOutputs(outputs: unknown): void {
         `${context} output ${index} has an invalid value`
       );
     }
+    // Fractional or negative values are not allowed; amounts are in whole picabu.
     if (!isNonNegativeInteger(value)) {
       throw new ApplicationObjectValidationError(
         "INVALID_FORMAT",
@@ -155,6 +159,8 @@ function validateOutputs(outputs: unknown): void {
   }
 }
 
+// Verifies that every input's sig is a valid Ed25519 signature over the signing payload,
+// using the pubkey from the referenced output.
 async function validateTransactionInputSignatures(
   transaction: Transaction,
   objectLookup: ObjectLookup,
@@ -169,6 +175,7 @@ async function validateTransactionInputSignatures(
       );
     }
 
+    // Resolve the transaction that created the output being spent.
     let referencedObject: ApplicationObject;
     try {
       referencedObject = await objectLookup.getObject(input.outpoint.txid);
@@ -183,6 +190,14 @@ async function validateTransactionInputSignatures(
       );
     }
 
+    if (referencedObject.type !== "transaction") {
+      throw new ApplicationObjectValidationError(
+        "INVALID_TX_OUTPOINT",
+        `Referenced object ${input.outpoint.txid} is not a transaction`
+      );
+    }
+
+    // Ensure the output index is within bounds of the referenced transaction's outputs.
     const referencedOutput = referencedObject.outputs[input.outpoint.index];
     if (referencedOutput === undefined) {
       throw new ApplicationObjectValidationError(
@@ -191,6 +206,8 @@ async function validateTransactionInputSignatures(
       );
     }
 
+    // The signing payload covers all outputs and inputs (with sigs set to null),
+    // so the signature commits to the full transaction structure.
     const isValidSignature = await ed.verifyAsync(
       ed.etc.hexToBytes(input.sig),
       signingPayload,
@@ -205,6 +222,8 @@ async function validateTransactionInputSignatures(
   }
 }
 
+// Ensures the sum of input values is >= the sum of output values (no coins created out of thin air).
+// The difference (fee) may be claimed by a miner via the coinbase transaction.
 async function validateTransactionConservation(
   transaction: Transaction,
   objectLookup: ObjectLookup
@@ -233,6 +252,13 @@ async function validateTransactionConservation(
       );
     }
 
+    if (referencedObject.type !== "transaction") {
+      throw new ApplicationObjectValidationError(
+        "INVALID_TX_OUTPOINT",
+        `Referenced object ${input.outpoint.txid} is not a transaction`
+      );
+    }
+
     const referencedOutput = referencedObject.outputs[input.outpoint.index];
     if (referencedOutput === undefined) {
       throw new ApplicationObjectValidationError(
@@ -249,6 +275,7 @@ async function validateTransactionConservation(
     outputTotal += output.value;
   }
 
+  // Strict inequality: outputs may be less than inputs (fee), but never more.
   if (inputTotal < outputTotal) {
     throw new ApplicationObjectValidationError(
       "INVALID_TX_CONSERVATION",
