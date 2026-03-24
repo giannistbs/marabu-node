@@ -1,7 +1,7 @@
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { encodeTransactionSigningPayload } from "../protocol/codec.js";
-import type { ApplicationObject, Block, ErrorName, Transaction } from "../types.js";
+import type { ApplicationObject, Block, ErrorName, Transaction, UtxoSnapshot } from "../types.js";
 import {
   isNonNegativeInteger,
   isValidEd25519PublicKey
@@ -49,12 +49,14 @@ async function validateBlockState(
 
   await checkTxsExistence() // this should also send a message to get missing TXids. after waiting for a while if you dont receive them, send back UNFINDABLE_OBJECT if unfound
 
-  await validateTxsAndUpdateUTXO() // this should also send UNFINDABLE_OBJECT if a tx can not be validated
 
   // in checkCoinbaseTxs we should check that at most there is one coinbase and it should be at index 0 in txids, send INVALID_BLOCK_COINBASE otherwise
-  await checkCoinbaseTxs()
+  checkCoinbaseTxPosition()
 
-  await checkCoinbaseTxSpending() // the coinbase tx cannot be spent in another tx in the same block, send INVALID_TX_OUTPOINT otherwise\
+  checkCoinbaseTxSpending() // the coinbase tx cannot be spent in another tx in the same block, send INVALID_TX_OUTPOINT otherwise
+
+
+  await validateTxsAndUpdateUTXO() // this should also send UNFINDABLE_OBJECT if a tx can not be validated
 
   // this should check that the coinbase tx has no inputs, exactly one output and a height, for the height and the public key they should be of the valid format
   // verify the law of conservation for th ecoinbase tx, the output of the coinbase tx can be at most the sum of tx fees in the block + the block reward. the block reward
@@ -64,7 +66,10 @@ async function validateBlockState(
 
 }
 
-async function validateTxsAndUpdateUTXO() {
+async function validateTxsAndUpdateUTXO(
+  block: Block,
+  objectLookup: ObjectLookup
+): Promise<UtxoSnapshot> {
   // first we should initialize the utxo set to the utxo set of the parent (previd)
 
   // then for each tx in the block:
@@ -228,7 +233,7 @@ async function validateTransactionConservation(
   transaction: Transaction,
   objectLookup: ObjectLookup
 ): Promise<void> {
-  let inputTotal = 0;
+  let inputTotal = 0n;
   for (let index = 0; index < transaction.inputs.length; index += 1) {
     const input = transaction.inputs[index];
     if (input === undefined) {
@@ -267,12 +272,12 @@ async function validateTransactionConservation(
       );
     }
 
-    inputTotal += referencedOutput.value;
+    inputTotal += BigInt(referencedOutput.value);
   }
 
-  let outputTotal = 0;
+  let outputTotal = 0n;
   for (const output of transaction.outputs) {
-    outputTotal += output.value;
+    outputTotal += BigInt(output.value);
   }
 
   // Strict inequality: outputs may be less than inputs (fee), but never more.
