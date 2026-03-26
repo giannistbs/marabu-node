@@ -88,7 +88,7 @@ async function validateTxsAndUpdateUTXO(
 
     if (transaction.type !== "transaction") {
       throw new ApplicationObjectValidationError(
-        "INVALID_TX_OUTPOINT",
+        "UNFINDABLE_OBJECT",
         `Referenced object ${txid} is not a transaction`
       );
     }
