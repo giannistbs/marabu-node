@@ -81,6 +81,70 @@ async function validateTxsAndUpdateUTXO(
     workingUtxo.set(`${entry.outpoint.txid}:${entry.outpoint.index}`, entry);
   }
 
+
+  // Now update the Utxo Set
+  for (const txid of block.txids) {
+    const transaction  = await objectLookup.getObject(txid);
+
+    if (transaction.type !== "transaction") {
+      throw new ApplicationObjectValidationError(
+        "INVALID_TX_OUTPOINT",
+        `Referenced object ${txid} is not a transaction`
+      );
+    }
+
+    // Flow for regular Txs
+    if (!("height" in transaction)) {
+
+
+      const signingPayload = encodeTransactionSigningPayload(transaction);
+      // Step 1
+      validateOutputs(transaction.outputs);
+      // Step 2
+      const referencedOutputs = resolveOutpointsFromUtxo(transaction, workingUtxo);
+      // Step 3
+      await validateTransactionInputSignatures(
+        transaction,
+        referencedOutputs,
+        signingPayload
+      );
+      // Step 4
+      validateTransactionConservation(transaction, referencedOutputs);
+
+
+
+      // inputs -- delete
+      for (const input of transaction.inputs) {
+        workingUtxo.delete(`${input.outpoint.txid}:${input.outpoint.index}`);
+      }
+
+      // outputs -- add
+      for (const [outputIndex, output] of transaction.outputs.entries()) {
+        workingUtxo.set(`${txid}:${outputIndex}`, {
+          outpoint: { txid: txid, index: outputIndex },
+          output
+        });
+      }
+
+
+    } else {
+      // Flow for coinbase txs
+      const coinbaseOutput = transaction.outputs[0];
+      if (coinbaseOutput === undefined) {
+        throw new ApplicationObjectValidationError(
+          "INVALID_BLOCK_COINBASE",
+          `Coinbase transaction ${txid} is missing its first output`
+        );
+      }
+      workingUtxo.set(`${txid}:0`, {
+        outpoint: { txid: txid, index: 0 },
+        output: coinbaseOutput
+      });
+    }
+
+
+  }
+
   // then for each tx in the block:
     //  we should validate it as per the existing logic -> validateTransactionState()
     // additionally we should check that each input of the tx corresponds to an output that is present in the utxo set
@@ -97,7 +161,39 @@ async function validateTxsAndUpdateUTXO(
     entries: [...workingUtxo.values()]
   };
   await objectLookup.putUtxo(computeObjectId(block), snapshot)
-  return parentUtxo
+  return snapshot
+}
+
+
+// Resolves each input's outpoint to the referenced output from the current UTXO map.
+function resolveOutpointsFromUtxo(
+  transaction: Transaction,
+  utxoMap: Map<string, UtxoEntry>
+): Output[] {
+  const referencedOutputs: Output[] = [];
+
+  for (let index = 0; index < transaction.inputs.length; index += 1) {
+    const input = transaction.inputs[index];
+    if (input === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INTERNAL_ERROR",
+        `Missing transaction input at index ${index}`
+      );
+    }
+
+    const key = `${input.outpoint.txid}:${input.outpoint.index}`;
+    const entry = utxoMap.get(key);
+    if (entry === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INVALID_TX_OUTPOINT",
+        `Referenced output ${key} is not in the UTXO set`
+      );
+    }
+
+    referencedOutputs.push(entry.output);
+  }
+
+  return referencedOutputs;
 }
 
   /*//////////////////////////////////////////////////////////////
