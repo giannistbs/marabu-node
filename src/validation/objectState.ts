@@ -1,12 +1,16 @@
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
-import { encodeApplicationObject, encodeTransactionSigningPayload } from "../protocol/codec.js";
-import type { ApplicationObject, Block, ErrorName, Output, Transaction, UtxoEntry, UtxoSnapshot } from "../types.js";
+import { encodeTransactionSigningPayload } from "../protocol/codec.js";
+import { computeObjectId } from "../protocol/hashing.js";
+import type { ApplicationObject, Block, ErrorName, Transaction, UtxoSnapshot } from "../types.js";
 import {
   isNonNegativeInteger,
   isValidEd25519PublicKey
 } from "./utils.js";
 import { computeObjectId } from "../protocol/hashing.js";
+
+const REQUIRED_BLOCK_TARGET =
+  "00000000abc00000000000000000000000000000000000000000000000000000";
 
 
   /*//////////////////////////////////////////////////////////////
@@ -45,7 +49,7 @@ async function validateBlockState(
   // ensureTarget(block); // ensure the target is our specified hardcoded target (00000000abc00000000000000000000000000000000000000000000000000000) send INVALID_FORMAT if error
 
 
-  // await checkPOW(); // should send INVALID_BLOCK_POW if error
+  checkPOW(block); // should send INVALID_BLOCK_POW if error
 
 
   // await checkTxsExistence() // this should also send a message to get missing TXids. after waiting for a while if you dont receive them, send back UNFINDABLE_OBJECT if unfound
@@ -388,6 +392,28 @@ function isMissingReferencedObjectError(error: unknown): boolean {
   return (
     "notFound" in error && error.notFound === true
   ) || error.name === "NotFoundError";
+}
+
+function ensureTarget(block: Block): void {
+  if (block.T !== REQUIRED_BLOCK_TARGET) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_FORMAT",
+      "Block target is incorrect"
+    );
+  }
+}
+
+function checkPOW(block: Block): void {
+  const blockId = computeObjectId(block);
+  const blockValue = BigInt(`0x${blockId}`);
+  const targetValue = BigInt(`0x${block.T}`);
+
+  if (blockValue >= targetValue) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_BLOCK_POW",
+      "Block does not satisfy proof of work"
+    );
+  }
 }
 
 
