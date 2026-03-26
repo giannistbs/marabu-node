@@ -53,139 +53,90 @@ async function validateBlockState(
   block: Block,
   objectLookup: ObjectLookup
 ): Promise<void> {
-  ensureTarget(block); // ensure the target is our specified hardcoded target (00000000abc00000000000000000000000000000000000000000000000000000) send INVALID_FORMAT if error
-  checkPOW(block); // should send INVALID_BLOCK_POW if error
-  await checkTxsExistence() // this should also send a message to get missing TXids. after waiting for a while if you dont receive them, send back UNFINDABLE_OBJECT if unfound
-  await checkCoinbaseTxPosition(block, objectLookup) // in checkCoinbaseTxs we should check that at most there is one coinbase and it should be at index 0 in txids, send INVALID_BLOCK_COINBASE otherwise
-  await checkCoinbaseTxSpending(block, objectLookup) // the coinbase tx cannot be spent in another tx in the same block, send INVALID_TX_OUTPOINT otherwise
-  await validateTxsAndUpdateUTXO() // this should also send UNFINDABLE_OBJECT if a tx can not be validated
-
-  // this should check that the coinbase tx has no inputs, exactly one output and a height, for the height and the public key they should be of the valid format
-  // verify the law of conservation for th ecoinbase tx, the output of the coinbase tx can be at most the sum of tx fees in the block + the block reward. the block reward
-  // is a constant of 50*10^12 picabu. the fee of the tx is the sum of its input values minus the sum of its output values. send INVALID_BLOCK_COINBASE error otherwise
+  ensureTarget(block);
+  checkPOW(block);
+  await checkTxsExistence(block, objectLookup)
+  await checkCoinbaseTxPosition(block, objectLookup)
+  await checkCoinbaseTxSpending(block, objectLookup)
   await validateCoinbaseTx(block, objectLookup)
+  // await validateTxsAndUpdateUTXO(block, objectLookup)
 }
 
-async function validateTxsAndUpdateUTXO(
+// async function validateTxsAndUpdateUTXO(
+//   block: Block,
+//   objectLookup: ObjectLookup
+// ): Promise<UtxoSnapshot> {
+//   // first we should initialize the utxo set to the utxo set of the parent (previd)
+
+//   // then for each tx in the block:
+//     //  we should validate it as per the existing logic -> validateTransactionState()
+//     // additionally we should check that each input of the tx corresponds to an output that is present in the utxo set
+//     // ie the output exists and it has not been spent yet
+//     // if the output is not present, send back INVALID_TX_OUTPOINT
+
+//     // then we should apply the tx by removing the UTXOs that are spent and adding the UTXOs that are created
+  
+//   // we repeat the previous for all txs using the updated utxo set
+
+//   // for now we can assume that the previous block was sent to as beforehand
+// }
+
+async function checkTxsExistence(
   block: Block,
   objectLookup: ObjectLookup
-): Promise<UtxoSnapshot> {
-  // first we should initialize the utxo set to the utxo set of the parent (previd)
+): Promise<void> {
+  const missingTxids: string[] = []
 
-  const parentUtxo: UtxoSnapshot = await objectLookup.getUtxo(block.previd as string);
+  for (const txid of block.txids) {
+    try {
+      const object = await objectLookup.getObject(txid)
+      if (object.type !== "transaction") {
+        throw new ApplicationObjectValidationError(
+          "UNFINDABLE_OBJECT",
+          `Block reference ${txid} is not a transaction`
+        )
+      }
+    } catch (error: unknown) {
+      if (!isMissingReferencedObjectError(error)) {
+        throw error
+      }
 
-  // We will construct the following for faster lookups
-  const workingUtxo = new Map<string, UtxoEntry>();
-  for (const entry of parentUtxo.entries) {
-    workingUtxo.set(`${entry.outpoint.txid}:${entry.outpoint.index}`, entry);
+      objectLookup.requestObject(txid)
+      missingTxids.push(txid)
+    }
   }
 
+  if (missingTxids.length === 0) {
+    return
+  }
 
-  // Now update the Utxo Set
-  for (const txid of block.txids) {
-    const transaction  = await objectLookup.getObject(txid);
+  await wait(3500)
 
-    if (transaction.type !== "transaction") {
+  for (const txid of missingTxids) {
+    try {
+      const object = await objectLookup.getObject(txid)
+      if (object.type !== "transaction") {
+        throw new ApplicationObjectValidationError(
+          "UNFINDABLE_OBJECT",
+          `Block reference ${txid} is not a transaction`
+        )
+      }
+    } catch (error: unknown) {
+      if (!isMissingReferencedObjectError(error)) {
+        throw error
+      }
+
       throw new ApplicationObjectValidationError(
         "UNFINDABLE_OBJECT",
-        `Referenced object ${txid} is not a transaction`
-      );
+        `Referenced transaction ${txid} could not be found`
+      )
     }
-
-    // Flow for regular Txs
-    if (!("height" in transaction)) {
-
-
-      const signingPayload = encodeTransactionSigningPayload(transaction);
-      // Step 1
-      validateOutputs(transaction.outputs);
-      // Step 2
-      const referencedOutputs = resolveOutpointsFromUtxo(transaction, workingUtxo);
-      // Step 3
-      await validateTransactionInputSignatures(
-        transaction,
-        referencedOutputs,
-        signingPayload
-      );
-      // Step 4
-      validateTransactionConservation(transaction, referencedOutputs);
-
-
-
-      // inputs -- delete
-      for (const input of transaction.inputs) {
-        workingUtxo.delete(`${input.outpoint.txid}:${input.outpoint.index}`);
-      }
-
-      // outputs -- add
-      for (const [outputIndex, output] of transaction.outputs.entries()) {
-        workingUtxo.set(`${txid}:${outputIndex}`, {
-          outpoint: { txid: txid, index: outputIndex },
-          output
-        });
-      }
-
-
-    } else {
-      // Flow for coinbase txs
-      const coinbaseOutput = transaction.outputs[0];
-      if (coinbaseOutput === undefined) {
-        throw new ApplicationObjectValidationError(
-          "INVALID_BLOCK_COINBASE",
-          `Coinbase transaction ${txid} is missing its first output`
-        );
-      }
-      workingUtxo.set(`${txid}:0`, {
-        outpoint: { txid: txid, index: 0 },
-        output: coinbaseOutput
-      });
-    }
-
-
   }
-  
-  const snapshot: UtxoSnapshot = {
-    entries: [...workingUtxo.values()]
-  };
-  await objectLookup.putUtxo(computeObjectId(block), snapshot)
-  return snapshot
 }
 
-
-// Resolves each input's outpoint to the referenced output from the current UTXO map.
-function resolveOutpointsFromUtxo(
-  transaction: Transaction,
-  utxoMap: Map<string, UtxoEntry>
-): Output[] {
-  const referencedOutputs: Output[] = [];
-
-  for (let index = 0; index < transaction.inputs.length; index += 1) {
-    const input = transaction.inputs[index];
-    if (input === undefined) {
-      throw new ApplicationObjectValidationError(
-        "INTERNAL_ERROR",
-        `Missing transaction input at index ${index}`
-      );
-    }
-
-    const key = `${input.outpoint.txid}:${input.outpoint.index}`;
-    const entry = utxoMap.get(key);
-    if (entry === undefined) {
-      throw new ApplicationObjectValidationError(
-        "INVALID_TX_OUTPOINT",
-        `Referenced output ${key} is not in the UTXO set`
-      );
-    }
-
-    referencedOutputs.push(entry.output);
-  }
-
-  return referencedOutputs;
-}
-
-  /*//////////////////////////////////////////////////////////////
-                     TRANSACTION VALIDATION
-  //////////////////////////////////////////////////////////////*/
+/*//////////////////////////////////////////////////////////////
+                    TRANSACTION VALIDATION
+//////////////////////////////////////////////////////////////*/
 
 // Validates input signatures and referenced outputs for a transaction.
 async function validateTransactionState(
@@ -403,7 +354,7 @@ function checkPOW(block: Block): void {
   const blockValue = BigInt(`0x${blockId}`);
   const targetValue = BigInt(`0x${block.T}`);
 
-  if (blockValue >= targetValue) {
+  if (blockValue >= targetValue) { // to check the equality 
     throw new ApplicationObjectValidationError(
       "INVALID_BLOCK_POW",
       "Block does not satisfy proof of work"
@@ -454,15 +405,6 @@ async function checkCoinbaseTxSpending(
   objectLookup: ObjectLookup
 ): Promise<void> {
   const coinbaseTxid = block.txids[0];
-  if (coinbaseTxid === undefined) {
-    return;
-  }
-
-  const firstTransaction = await getBlockTransaction(coinbaseTxid, objectLookup);
-  if (!isCoinbaseTransaction(firstTransaction)) {
-    return;
-  }
-
   for (let index = 1; index < block.txids.length; index += 1) {
     const txid = block.txids[index];
     if (txid === undefined) {
@@ -648,6 +590,12 @@ function isCoinbaseTransaction(
   return "height" in transaction;
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
 
 
 
@@ -674,5 +622,5 @@ ed.hashes.sha512 = sha512;
 interface ObjectLookup {
   getObject(key: string): Promise<ApplicationObject>;
   getUtxo(blockId: string): Promise<UtxoSnapshot>;
-  putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void> ;
+  requestObject(objectId: string): void;
 }
