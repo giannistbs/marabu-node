@@ -138,7 +138,11 @@ export class MarabuNode {
     message: ObjectMessage
   ): Promise<boolean> {
     try {
-      await validateApplicationObjectState(message.object, this.objectStore);
+      await validateApplicationObjectState(message.object, {
+        getObject: (key: string) => this.objectStore.getObject(key),
+        getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
+        requestObject: (objectId: string) => this.sendGetObjectToAllPeers(objectId)
+      });
       const objectId = computeObjectId(message.object);
       if (await this.objectStore.hasObject(objectId)) {
         return true;
@@ -189,6 +193,13 @@ export class MarabuNode {
         type: "ihaveobject",
         objectid: objectId
       });
+    }
+  }
+
+  // Sends getobject message to all connected peers
+  private sendGetObjectToAllPeers(objectId: string): void {
+    for (const socket of this.connections.keys()) {
+      this.sendGetObjectToPeer(socket, objectId);
     }
   }
 
