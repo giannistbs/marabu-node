@@ -1,12 +1,25 @@
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
-import { encodeApplicationObject, encodeTransactionSigningPayload } from "../protocol/codec.js";
-import type { ApplicationObject, Block, ErrorName, Output, Transaction, UtxoEntry, UtxoSnapshot } from "../types.js";
+import { encodeTransactionSigningPayload } from "../protocol/codec.js";
+import { computeObjectId } from "../protocol/hashing.js";
+import type {
+  ApplicationObject,
+  Block,
+  CoinbaseTransaction,
+  ErrorName,
+  Output,
+  Transaction,
+  UtxoEntry,
+  UtxoSnapshot
+} from "../types.js";
 import {
   isNonNegativeInteger,
   isValidEd25519PublicKey
 } from "./utils.js";
-import { computeObjectId } from "../protocol/hashing.js";
+
+const REQUIRED_BLOCK_TARGET =
+  "00000000abc00000000000000000000000000000000000000000000000000000";
+const BLOCK_REWARD = 50_000_000_000_000n;
 
 
   /*//////////////////////////////////////////////////////////////
@@ -41,30 +54,66 @@ async function validateBlockState(
   block: Block,
   objectLookup: ObjectLookup
 ): Promise<void> {
+  ensureTarget(block);
+  checkPOW(block);
+  await checkTxsExistence(block, objectLookup)
+  await checkCoinbaseTxPosition(block, objectLookup)
+  await checkCoinbaseTxSpending(block, objectLookup)
+  await validateTxsAndUpdateUTXO(block, objectLookup)
+  await validateCoinbaseTx(block, objectLookup)
+}
 
-  // ensureTarget(block); // ensure the target is our specified hardcoded target (00000000abc00000000000000000000000000000000000000000000000000000) send INVALID_FORMAT if error
+async function checkTxsExistence(
+  block: Block,
+  objectLookup: ObjectLookup
+): Promise<void> {
+  const missingTxids: string[] = []
 
+  for (const txid of block.txids) {
+    try {
+      const object = await objectLookup.getObject(txid)
+      if (object.type !== "transaction") {
+        throw new ApplicationObjectValidationError(
+          "UNFINDABLE_OBJECT",
+          `Block reference ${txid} is not a transaction`
+        )
+      }
+    } catch (error: unknown) {
+      if (!isMissingReferencedObjectError(error)) {
+        throw error
+      }
 
-  // await checkPOW(); // should send INVALID_BLOCK_POW if error
+      objectLookup.requestObject(txid)
+      missingTxids.push(txid)
+    }
+  }
 
+  if (missingTxids.length === 0) {
+    return
+  }
 
-  // await checkTxsExistence() // this should also send a message to get missing TXids. after waiting for a while if you dont receive them, send back UNFINDABLE_OBJECT if unfound
+  await wait(3500)
 
+  for (const txid of missingTxids) {
+    try {
+      const object = await objectLookup.getObject(txid)
+      if (object.type !== "transaction") {
+        throw new ApplicationObjectValidationError(
+          "UNFINDABLE_OBJECT",
+          `Block reference ${txid} is not a transaction`
+        )
+      }
+    } catch (error: unknown) {
+      if (!isMissingReferencedObjectError(error)) {
+        throw error
+      }
 
-  // // in checkCoinbaseTxs we should check that at most there is one coinbase and it should be at index 0 in txids, send INVALID_BLOCK_COINBASE otherwise
-  // checkCoinbaseTxPosition()
-
-  // checkCoinbaseTxSpending() // the coinbase tx cannot be spent in another tx in the same block, send INVALID_TX_OUTPOINT otherwise
-
-
-  // await validateTxsAndUpdateUTXO() // this should also send UNFINDABLE_OBJECT if a tx can not be validated
-
-  // // this should check that the coinbase tx has no inputs, exactly one output and a height, for the height and the public key they should be of the valid format
-  // // verify the law of conservation for th ecoinbase tx, the output of the coinbase tx can be at most the sum of tx fees in the block + the block reward. the block reward
-  // // is a constant of 50*10^12 picabu. the fee of the tx is the sum of its input values minus the sum of its output values. send INVALID_BLOCK_COINBASE error otherwise
-  // await validateCoinbaseTx()
-
-
+      throw new ApplicationObjectValidationError(
+        "UNFINDABLE_OBJECT",
+        `Referenced transaction ${txid} could not be found`
+      )
+    }
+  }
 }
 
 async function validateTxsAndUpdateUTXO(
@@ -144,7 +193,7 @@ async function validateTxsAndUpdateUTXO(
 
 
   }
-  
+
   const snapshot: UtxoSnapshot = {
     entries: [...workingUtxo.values()]
   };
@@ -390,8 +439,261 @@ function isMissingReferencedObjectError(error: unknown): boolean {
   ) || error.name === "NotFoundError";
 }
 
+function ensureTarget(block: Block): void {
+  if (block.T !== REQUIRED_BLOCK_TARGET) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_FORMAT",
+      "Block target is incorrect"
+    );
+  }
+}
 
+function checkPOW(block: Block): void {
+  const blockId = computeObjectId(block);
+  const blockValue = BigInt(`0x${blockId}`);
+  const targetValue = BigInt(`0x${block.T}`);
 
+  if (blockValue >= targetValue) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_BLOCK_POW",
+      "Block does not satisfy proof of work"
+    );
+  }
+}
+
+async function checkCoinbaseTxPosition(
+  block: Block,
+  objectLookup: ObjectLookup
+): Promise<void> {
+  let coinbaseIndex: number | null = null;
+
+  for (let index = 0; index < block.txids.length; index += 1) {
+    const txid = block.txids[index];
+    if (txid === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INTERNAL_ERROR",
+        `Missing block txid at index ${index}`
+      );
+    }
+
+    const transaction = await getBlockTransaction(txid, objectLookup);
+    if (!isCoinbaseTransaction(transaction)) {
+      continue;
+    }
+
+    if (coinbaseIndex !== null) {
+      throw new ApplicationObjectValidationError(
+        "INVALID_BLOCK_COINBASE",
+        "Block contains more than one coinbase transaction"
+      );
+    }
+
+    coinbaseIndex = index;
+  }
+
+  if (coinbaseIndex !== null && coinbaseIndex !== 0) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_BLOCK_COINBASE",
+      "Coinbase transaction must be at index 0"
+    );
+  }
+}
+
+async function checkCoinbaseTxSpending(
+  block: Block,
+  objectLookup: ObjectLookup
+): Promise<void> {
+  const coinbaseTxid = block.txids[0];
+  for (let index = 1; index < block.txids.length; index += 1) {
+    const txid = block.txids[index];
+    if (txid === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INTERNAL_ERROR",
+        `Missing block txid at index ${index}`
+      );
+    }
+
+    const transaction = await getBlockTransaction(txid, objectLookup);
+    if (isCoinbaseTransaction(transaction)) {
+      continue;
+    }
+
+    for (const input of transaction.inputs) {
+      if (input.outpoint.txid === coinbaseTxid) {
+        throw new ApplicationObjectValidationError(
+          "INVALID_TX_OUTPOINT",
+          "Coinbase transaction cannot be spent in the same block"
+        );
+      }
+    }
+  }
+}
+
+async function validateCoinbaseTx(
+  block: Block,
+  objectLookup: ObjectLookup
+): Promise<void> {
+  const coinbaseTxid = block.txids[0];
+  if (coinbaseTxid === undefined) {
+    return;
+  }
+
+  const firstTransaction = await getBlockTransaction(coinbaseTxid, objectLookup);
+  if (!isCoinbaseTransaction(firstTransaction)) {
+    return;
+  }
+
+  if ("inputs" in firstTransaction) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_FORMAT",
+      "Coinbase transaction must not contain inputs"
+    );
+  }
+
+  if (!isNonNegativeInteger(firstTransaction.height)) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_FORMAT",
+      "Coinbase transaction height is invalid"
+    );
+  }
+
+  if (firstTransaction.outputs.length !== 1) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_FORMAT",
+      "Coinbase transaction must have exactly one output"
+    );
+  }
+
+  validateOutputs(firstTransaction.outputs);
+
+  let totalFees = 0n;
+  for (let index = 1; index < block.txids.length; index += 1) {
+    const txid = block.txids[index];
+    if (txid === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INTERNAL_ERROR",
+        `Missing block txid at index ${index}`
+      );
+    }
+
+    const transaction = await getBlockTransaction(txid, objectLookup);
+    if (isCoinbaseTransaction(transaction)) {
+      continue;
+    }
+
+    totalFees += await calculateTransactionFee(transaction, objectLookup);
+  }
+
+  const coinbaseOutput = firstTransaction.outputs[0];
+  if (coinbaseOutput === undefined) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_FORMAT",
+      "Coinbase transaction must have exactly one output"
+    );
+  }
+
+  const maximumCoinbaseValue = BLOCK_REWARD + totalFees;
+  if (BigInt(coinbaseOutput.value) > maximumCoinbaseValue) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_BLOCK_COINBASE",
+      "Coinbase transaction claims more than the block reward plus fees"
+    );
+  }
+}
+
+async function calculateTransactionFee(
+  transaction: Transaction,
+  objectLookup: ObjectLookup
+): Promise<bigint> {
+  let inputTotal = 0n;
+  for (let index = 0; index < transaction.inputs.length; index += 1) {
+    const input = transaction.inputs[index];
+    if (input === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INTERNAL_ERROR",
+        `Missing transaction input at index ${index}`
+      );
+    }
+
+    let referencedObject: ApplicationObject;
+    try {
+      referencedObject = await objectLookup.getObject(input.outpoint.txid);
+    } catch (error: unknown) {
+      if (!isMissingReferencedObjectError(error)) {
+        throw error;
+      }
+
+      throw new ApplicationObjectValidationError(
+        "UNKNOWN_OBJECT",
+        `Referenced transaction ${input.outpoint.txid} is unknown`
+      );
+    }
+
+    if (referencedObject.type !== "transaction") {
+      throw new ApplicationObjectValidationError(
+        "INVALID_TX_OUTPOINT",
+        `Referenced object ${input.outpoint.txid} is not a transaction`
+      );
+    }
+
+    const referencedOutput = referencedObject.outputs[input.outpoint.index];
+    if (referencedOutput === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INVALID_TX_OUTPOINT",
+        `Referenced output ${input.outpoint.txid}:${input.outpoint.index} is out of range`
+      );
+    }
+
+    inputTotal += BigInt(referencedOutput.value);
+  }
+
+  let outputTotal = 0n;
+  for (const output of transaction.outputs) {
+    outputTotal += BigInt(output.value);
+  }
+
+  return inputTotal - outputTotal;
+}
+
+async function getBlockTransaction(
+  txid: string,
+  objectLookup: ObjectLookup
+): Promise<Transaction | CoinbaseTransaction> {
+  let referencedObject: ApplicationObject;
+  try {
+    referencedObject = await objectLookup.getObject(txid);
+  } catch (error: unknown) {
+    if (!isMissingReferencedObjectError(error)) {
+      throw error;
+    }
+
+    throw new ApplicationObjectValidationError(
+      "UNFINDABLE_OBJECT",
+      `Block references unknown transaction ${txid}`
+    );
+  }
+
+  if (referencedObject.type !== "transaction") {
+    throw new ApplicationObjectValidationError(
+      "UNFINDABLE_OBJECT",
+      `Block reference ${txid} is not a transaction`
+    );
+  }
+
+  return referencedObject;
+}
+
+function isCoinbaseTransaction(
+  transaction: Transaction | CoinbaseTransaction
+): transaction is CoinbaseTransaction {
+  return "height" in transaction;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
 
 
   /*//////////////////////////////////////////////////////////////
@@ -416,5 +718,6 @@ ed.hashes.sha512 = sha512;
 interface ObjectLookup {
   getObject(key: string): Promise<ApplicationObject>;
   getUtxo(blockId: string): Promise<UtxoSnapshot>;
-  putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void> ;
+  putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void>;
+  requestObject(objectId: string): void;
 }
