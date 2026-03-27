@@ -137,6 +137,13 @@ NODE
   echo $!
 }
 
+object_exists() {
+  local objectid="$1"
+  local response
+  response=$(send_messages "$HELLO" "{\"type\":\"getobject\",\"objectid\":\"$objectid\"}")
+  echo "$response" | grep -q '"type":"object"'
+}
+
 prepare_pset2_vectors() {
   if ! command -v node >/dev/null 2>&1; then
     return 1
@@ -264,6 +271,107 @@ NODE
   INVALID_OUTPOINT_TX_OBJ=$(echo "$data" | sed -n 's/^INVALID_OUTPOINT_TX_OBJ://p')
   UNKNOWN_OBJECT_TX_OBJ=$(echo "$data" | sed -n 's/^UNKNOWN_OBJECT_TX_OBJ://p')
   INVALID_CONSERVATION_TX_OBJ=$(echo "$data" | sed -n 's/^INVALID_CONSERVATION_TX_OBJ://p')
+  return 0
+}
+
+prepare_pset3_vectors() {
+  if ! command -v node >/dev/null 2>&1; then
+    return 1
+  fi
+  local data
+  if ! data=$(node --import tsx --input-type=module - <<'NODE'
+import canonicalize from "canonicalize";
+import { createHash } from "blake2";
+
+const REQUIRED_TARGET =
+  "00000000abc00000000000000000000000000000000000000000000000000000";
+
+const INVALID_TARGET =
+  "00000000abd00000000000000000000000000000000000000000000000000000";
+
+const encode = (obj) => {
+  const encoded = canonicalize(obj);
+  if (typeof encoded !== "string") throw new Error("canonicalize failed");
+  return encoded;
+};
+
+const objectId = (obj) => {
+  const h = createHash("blake2s");
+  h.update(Buffer.from(encode(obj)));
+  return h.digest("hex");
+};
+
+const tx = {
+  height: 1,
+  outputs: [
+    {
+      pubkey: "b6a95d7b410ae1eb924898ae584d21523b53aa5a78d1bc54abe964fd8e63f487",
+      value: 50000000000000
+    }
+  ],
+  type: "transaction"
+};
+
+const txid = objectId(tx);
+
+const block = {
+  T: REQUIRED_TARGET,
+  created: 1772028037,
+  miner: "kalaburi",
+  nonce: "b067391b9caf9821861e83cfc4d4656150ff2f1f800dbf37bdc76d211e76bf86",
+  previd: "00000000522473196b73bc619a8b18472c4cb4c6caf785a13fa32aaae7222ff6",
+  txids: [txid],
+  type: "block"
+};
+
+const invalidTargetBlock = {
+  ...block,
+  T: INVALID_TARGET
+};
+
+const makeInvalidPowBlock = () => {
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const candidate = {
+      ...block,
+      nonce: attempt.toString(16).padStart(64, "0")
+    };
+    const candidateId = objectId(candidate);
+    if (BigInt(`0x${candidateId}`) >= BigInt(`0x${candidate.T}`)) {
+      return candidate;
+    }
+  }
+  throw new Error("failed to construct invalid pow block");
+};
+
+const invalidPowBlock = makeInvalidPowBlock();
+
+const lines = [
+  ["PSET3_TX_OBJ", encode(tx)],
+  ["PSET3_TX_ID", txid],
+  ["PSET3_BLOCK_OBJ", encode(block)],
+  ["PSET3_BLOCK_ID", objectId(block)],
+  ["PSET3_INVALID_TARGET_BLOCK_OBJ", encode(invalidTargetBlock)],
+  ["PSET3_INVALID_TARGET_BLOCK_ID", objectId(invalidTargetBlock)],
+  ["PSET3_INVALID_POW_BLOCK_OBJ", encode(invalidPowBlock)],
+  ["PSET3_INVALID_POW_BLOCK_ID", objectId(invalidPowBlock)]
+];
+
+for (const [key, value] of lines) {
+  console.log(`${key}:${value}`);
+}
+NODE
+  ); then
+    return 1
+  fi
+
+  PSET3_TX_OBJ=$(echo "$data" | sed -n 's/^PSET3_TX_OBJ://p')
+  PSET3_TX_ID=$(echo "$data" | sed -n 's/^PSET3_TX_ID://p')
+  PSET3_BLOCK_OBJ=$(echo "$data" | sed -n 's/^PSET3_BLOCK_OBJ://p')
+  PSET3_BLOCK_ID=$(echo "$data" | sed -n 's/^PSET3_BLOCK_ID://p')
+  PSET3_INVALID_TARGET_BLOCK_OBJ=$(echo "$data" | sed -n 's/^PSET3_INVALID_TARGET_BLOCK_OBJ://p')
+  PSET3_INVALID_TARGET_BLOCK_ID=$(echo "$data" | sed -n 's/^PSET3_INVALID_TARGET_BLOCK_ID://p')
+  PSET3_INVALID_POW_BLOCK_OBJ=$(echo "$data" | sed -n 's/^PSET3_INVALID_POW_BLOCK_OBJ://p')
+  PSET3_INVALID_POW_BLOCK_ID=$(echo "$data" | sed -n 's/^PSET3_INVALID_POW_BLOCK_ID://p')
   return 0
 }
 
@@ -444,6 +552,120 @@ if prepare_pset2_vectors; then
   expect_error "$RESPONSE" "INVALID_FORMAT" "Invalid format rejected"
 else
   info "Node.js or dependencies missing; skipping PSET 2 tests."
+fi
+
+header "Problem Set 3 (block validation)"
+
+if prepare_pset3_vectors; then
+  info "PSET 3 test vectors ready (valid block: ${PSET3_BLOCK_ID:0:12}...)."
+
+  header "PSET3 Block validation — invalid target"
+  GOSSIP_LOG=$(mktemp)
+  GOSSIP_PID=$(listen_for_messages "$GOSSIP_LOG" "$((TIMEOUT + 3))")
+  sleep 1
+  RESPONSE=$(send_messages "$HELLO" "{\"type\":\"object\",\"object\":$PSET3_INVALID_TARGET_BLOCK_OBJ}")
+  expect_error "$RESPONSE" "INVALID_FORMAT" "Invalid target rejected"
+  wait "$GOSSIP_PID" 2>/dev/null || true
+  if grep -q "$PSET3_INVALID_TARGET_BLOCK_ID" "$GOSSIP_LOG"; then
+    fail "Invalid target block was gossiped"
+  else
+    pass "Invalid target block was not gossiped"
+  fi
+  rm -f "$GOSSIP_LOG"
+
+  header "PSET3 Block validation — invalid proof of work"
+  GOSSIP_LOG=$(mktemp)
+  GOSSIP_PID=$(listen_for_messages "$GOSSIP_LOG" "$((TIMEOUT + 3))")
+  sleep 1
+  RESPONSE=$(send_messages "$HELLO" "{\"type\":\"object\",\"object\":$PSET3_INVALID_POW_BLOCK_OBJ}")
+  expect_error "$RESPONSE" "INVALID_BLOCK_POW" "Invalid proof of work rejected"
+  wait "$GOSSIP_PID" 2>/dev/null || true
+  if grep -q "$PSET3_INVALID_POW_BLOCK_ID" "$GOSSIP_LOG"; then
+    fail "Invalid proof-of-work block was gossiped"
+  else
+    pass "Invalid proof-of-work block was not gossiped"
+  fi
+  rm -f "$GOSSIP_LOG"
+
+  header "PSET3 Block validation — missing transaction in block"
+  if object_exists "$PSET3_TX_ID"; then
+    info "Skipping missing-transaction check because the assignment transaction is already stored on the node."
+  else
+    GOSSIP_LOG=$(mktemp)
+    GOSSIP_PID=$(listen_for_messages "$GOSSIP_LOG" "$((TIMEOUT + 3))")
+    sleep 1
+    RESPONSE=$(send_messages "$HELLO" "{\"type\":\"object\",\"object\":$PSET3_BLOCK_OBJ}")
+    wait "$GOSSIP_PID" 2>/dev/null || true
+
+    ERR_NAME=$(extract_error_name "$RESPONSE")
+    TX_FETCHED=0
+    BLOCK_STORED=0
+    BLOCK_GOSSIPED=0
+
+    if object_exists "$PSET3_TX_ID"; then
+      TX_FETCHED=1
+    fi
+    if object_exists "$PSET3_BLOCK_ID"; then
+      BLOCK_STORED=1
+    fi
+    if grep -q "$PSET3_BLOCK_ID" "$GOSSIP_LOG"; then
+      BLOCK_GOSSIPED=1
+    fi
+
+    if [[ "$ERR_NAME" == "UNFINDABLE_OBJECT" ]]; then
+      pass "Missing transaction rejected"
+      if [[ "$BLOCK_GOSSIPED" -eq 1 ]]; then
+        fail "Block with missing transaction was gossiped"
+      else
+        pass "Block with missing transaction was not gossiped"
+      fi
+    elif [[ "$TX_FETCHED" -eq 1 || "$BLOCK_STORED" -eq 1 || "$BLOCK_GOSSIPED" -eq 1 ]]; then
+      info "Node fetched the missing transaction from peers during the test; skipping strict UNFINDABLE_OBJECT assertion."
+      pass "Missing-transaction case resolved via peer fetch"
+    else
+      fail "Expected UNFINDABLE_OBJECT for missing transaction"
+      if [[ -n "$ERR_NAME" ]]; then
+        info "Error name: $ERR_NAME"
+      else
+        print_error_payload "$RESPONSE"
+      fi
+      if [[ "$BLOCK_GOSSIPED" -eq 1 ]]; then
+        fail "Block with missing transaction was gossiped"
+      else
+        pass "Block with missing transaction was not gossiped"
+      fi
+    fi
+    rm -f "$GOSSIP_LOG"
+  fi
+
+  header "PSET3 Block validation — valid block gossip"
+  if object_exists "$PSET3_BLOCK_ID"; then
+    info "Skipping valid block gossip check because the assignment block is already stored on the node."
+  else
+    if object_exists "$PSET3_TX_ID"; then
+      info "Assignment transaction already stored; skipping seed."
+    else
+      RESPONSE=$(send_messages "$HELLO" "{\"type\":\"object\",\"object\":$PSET3_TX_OBJ}")
+      expect_no_error "$RESPONSE" "Assignment transaction accepted"
+    fi
+
+    GOSSIP_LOG=$(mktemp)
+    GOSSIP_PID=$(listen_for_messages "$GOSSIP_LOG" "$((TIMEOUT + 3))")
+    sleep 1
+    RESPONSE=$(send_messages "$HELLO" "{\"type\":\"object\",\"object\":$PSET3_BLOCK_OBJ}")
+    expect_no_error "$RESPONSE" "Valid block accepted"
+    wait "$GOSSIP_PID" 2>/dev/null || true
+    if grep -q "$PSET3_BLOCK_ID" "$GOSSIP_LOG"; then
+      pass "Valid block was gossiped"
+    else
+      fail "Expected ihaveobject gossip for valid block"
+      info "Captured messages:"
+      sed -n '1,120p' "$GOSSIP_LOG" | sed 's/^/  /'
+    fi
+    rm -f "$GOSSIP_LOG"
+  fi
+else
+  info "Node.js or dependencies missing; skipping PSET 3 tests."
 fi
 
 header "Done"
