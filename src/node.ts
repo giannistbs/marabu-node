@@ -27,7 +27,7 @@ interface ConnectionState {
   helloReceived: boolean;
   outbound: boolean;
   peerLabel: string;
-  inFlightHandlers: Set<Promise<void>>;
+  processing: Promise<void>;
 }
 
 export class MarabuNode {
@@ -279,8 +279,8 @@ export class MarabuNode {
 
     // Collect pending processing promises before destroying sockets so we can
     // wait for in-flight handlers to settle before closing the object store.
-    const pendingProcessing = Array.from(this.connections.values()).flatMap(
-      (state) => Array.from(state.inFlightHandlers)
+    const pendingProcessing = Array.from(this.connections.values()).map(
+      (state) => state.processing
     );
 
     // Destroy all active sockets so in-flight handlers terminate promptly.
@@ -328,7 +328,7 @@ export class MarabuNode {
       helloReceived: false,
       outbound,
       peerLabel: outboundPeer ?? this.describeSocket(socket),
-      inFlightHandlers: new Set()
+      processing: Promise.resolve()
     };
 
     this.nextConnectionId += 1;
@@ -345,11 +345,32 @@ export class MarabuNode {
     // Accumulate stream data and parse line-delimited messages.
     socket.on("data", (chunk) => {
       const textChunk = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      try {
-        this.handleData(socket, textChunk);
-      } catch (error: unknown) {
-        this.handleConnectionFailure(socket, state, error);
-      }
+      state.processing = state.processing
+        .then(() => this.handleData(socket, textChunk))
+        .catch((error: unknown) => {
+          const description =
+            error instanceof Error ? error.message : "Unexpected connection error";
+          try {
+            this.sendErrorAndClose(socket, {
+              type: "error",
+              name: "INTERNAL_ERROR",
+              description
+            });
+          } catch (closeError) {
+            logError(
+              `[connection ${state.id}] close failed: ${
+                closeError instanceof Error ? closeError.message : String(closeError)
+              }`
+            );
+          }
+
+          logError(
+            `[connection ${state.id}] handleData failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+          return undefined;
+        });
     });
 
     socket.on("error", (error) => {
@@ -380,7 +401,7 @@ export class MarabuNode {
   }
 
   // Buffers stream chunks into complete protocol lines and dispatches messages.
-  private handleData(socket: net.Socket, chunk: string): void {
+  private async handleData(socket: net.Socket, chunk: string): Promise<void> {
     const state = this.connections.get(socket);
     if (state === undefined || socket.destroyed) {
       return;
@@ -427,51 +448,12 @@ export class MarabuNode {
       }
 
       // Dispatch a validated message
-      const handler = this.handleValidatedMessage(socket, state, message)
-        .then((keepConnection) => {
-          // The handler itself is responsible for closing the socket when needed.
-          if (!keepConnection) {
-            return;
-          }
-        })
-        .catch((error: unknown) => {
-          this.handleConnectionFailure(socket, state, error);
-        })
-        .finally(() => {
-          state.inFlightHandlers.delete(handler);
-        });
-
-      state.inFlightHandlers.add(handler);
+      const keepConnection = await this.handleValidatedMessage(socket, state, message);
+      // Stops the processing loop if the handler closed the socket or the message was invalid.
+      if (!keepConnection) {
+        return;
+      }
     }
-  }
-
-  // Reports an unexpected handler failure to the peer and records it in local logs.
-  private handleConnectionFailure(
-    socket: net.Socket,
-    state: ConnectionState,
-    error: unknown
-  ): void {
-    const description =
-      error instanceof Error ? error.message : "Unexpected connection error";
-    try {
-      this.sendErrorAndClose(socket, {
-        type: "error",
-        name: "INTERNAL_ERROR",
-        description
-      });
-    } catch (closeError) {
-      logError(
-        `[connection ${state.id}] close failed: ${
-          closeError instanceof Error ? closeError.message : String(closeError)
-        }`
-      );
-    }
-
-    logError(
-      `[connection ${state.id}] handleData failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
   }
 
   // Encodes and writes a protocol message unless the socket is already closed.
