@@ -173,21 +173,25 @@ async function buildUpdatedUtxo(
 
     // Flow for regular Txs
     if (!("height" in transaction)) {
+      let referencedOutputs: Output[];
+      try {
+        const signingPayload = encodeTransactionSigningPayload(transaction);
+        // Step 1
+        validateOutputs(transaction.outputs);
+        // Step 2
+        referencedOutputs = resolveOutpointsFromUtxo(transaction, workingUtxo);
+        // Step 3
+        await validateTransactionInputSignatures(
+          transaction,
+          referencedOutputs,
+          signingPayload
+        );
+        // Step 4
+        validateTransactionConservation(transaction, referencedOutputs);
+      } catch (error: unknown) {
+        throw remapInvalidBlockTransactionError(txid, error);
+      }
 
-
-      const signingPayload = encodeTransactionSigningPayload(transaction);
-      // Step 1
-      validateOutputs(transaction.outputs);
-      // Step 2
-      const referencedOutputs = resolveOutpointsFromUtxo(transaction, workingUtxo);
-      // Step 3
-      await validateTransactionInputSignatures(
-        transaction,
-        referencedOutputs,
-        signingPayload
-      );
-      // Step 4
-      validateTransactionConservation(transaction, referencedOutputs);
       totalFees += calculateTransactionFeeFromOutputs(
         transaction,
         referencedOutputs
@@ -652,6 +656,28 @@ function calculateTransactionFeeFromOutputs(
   }
 
   return inputTotal - outputTotal;
+}
+
+function remapInvalidBlockTransactionError(
+  txid: string,
+  error: unknown
+): unknown {
+  if (!(error instanceof ApplicationObjectValidationError)) {
+    return error;
+  }
+
+  switch (error.errorName) {
+    case "INVALID_FORMAT":
+    case "INVALID_TX_SIGNATURE":
+    case "INVALID_TX_CONSERVATION":
+    case "UNKNOWN_OBJECT":
+      return new ApplicationObjectValidationError(
+        "UNFINDABLE_OBJECT",
+        `Block contains invalid transaction ${txid}`
+      );
+    default:
+      return error;
+  }
 }
 
 async function getBlockTransaction(
