@@ -1,7 +1,6 @@
 import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { encodeTransactionSigningPayload } from "../protocol/codec.js";
-import { computeObjectId } from "../protocol/hashing.js";
 import {
   GENESIS_BLOCK,
   type ApplicationObject,
@@ -768,5 +767,6 @@ ed.hashes.sha512 = sha512;
 interface ObjectLookup {
   getObject(key: string): Promise<ApplicationObject>;
   getUtxo(blockId: string): Promise<UtxoSnapshot>;
+  putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void>;
   requestObject(objectId: string): void;
 }
