@@ -122,8 +122,18 @@ async function validateTxsAndUpdateUTXO(
   objectLookup: ObjectLookup
 ): Promise<{ snapshot: UtxoSnapshot; totalFees: bigint }> {
   // first we should initialize the utxo set to the utxo set of the parent (previd)
+  let parentUtxo: UtxoSnapshot;
+  try {
+    parentUtxo = await objectLookup.getUtxo(block.previd as string);
+  } catch (error: unknown) {
+    if (!isMissingReferencedObjectError(error)) {
+      throw error;
+    }
 
-  const parentUtxo: UtxoSnapshot = await objectLookup.getUtxo(block.previd as string);
+    throw new MissingParentBlockError(
+      `Missing parent UTXO for block ${computeObjectId(block)}`
+    );
+  }
 
   // We will construct the following for faster lookups
   const workingUtxo = new Map<string, UtxoEntry>();
@@ -668,6 +678,13 @@ export class ApplicationObjectValidationError extends Error {
   ) {
     super(message);
     this.name = "ApplicationObjectValidationError";
+  }
+}
+
+export class MissingParentBlockError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingParentBlockError";
   }
 }
 

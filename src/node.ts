@@ -14,6 +14,7 @@ import type {
 } from "./types.js";
 import {
   ApplicationObjectValidationError,
+  MissingParentBlockError,
   validateApplicationObjectState
 } from "./validation/objectState.js";
 import { MessageValidationError } from "./validation/messageSchema.js";
@@ -154,6 +155,10 @@ export class MarabuNode {
       this.sendIHaveObjectToAllPeers(objectId);
       return true;
     } catch (error) {
+      if (error instanceof MissingParentBlockError) {
+        return true;
+      }
+
       if (error instanceof ApplicationObjectValidationError) {
         this.sendErrorAndClose(socket, {
           type: "error",
