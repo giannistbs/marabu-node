@@ -2,15 +2,16 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { encodeTransactionSigningPayload } from "../protocol/codec.js";
 import { computeObjectId } from "../protocol/hashing.js";
-import type {
-  ApplicationObject,
-  Block,
-  CoinbaseTransaction,
-  ErrorName,
-  Output,
-  Transaction,
-  UtxoEntry,
-  UtxoSnapshot
+import {
+  GENESIS_BLOCK,
+  type ApplicationObject,
+  type Block,
+  type CoinbaseTransaction,
+  type ErrorName,
+  type Output,
+  type Transaction,
+  type UtxoEntry,
+  type UtxoSnapshot
 } from "../types.js";
 import {
   isNonNegativeInteger,
@@ -20,6 +21,7 @@ import {
 const REQUIRED_BLOCK_TARGET =
   "00000000abc00000000000000000000000000000000000000000000000000000";
 const BLOCK_REWARD = 50_000_000_000_000n;
+const GENESIS_BLOCK_ID = computeObjectId(GENESIS_BLOCK);
 
 
   /*//////////////////////////////////////////////////////////////
@@ -56,6 +58,7 @@ async function validateBlockState(
 ): Promise<void> {
   ensureTarget(block);
   checkPOW(block);
+  ensureGenesis(block);
   await checkTxsExistence(block, objectLookup)
   const coinbaseTxid = await checkCoinbaseTxPosition(block, objectLookup)
   await checkCoinbaseTxSpending(block, objectLookup, coinbaseTxid)
@@ -122,9 +125,13 @@ async function validateTxsAndUpdateUTXO(
   objectLookup: ObjectLookup
 ): Promise<{ snapshot: UtxoSnapshot; totalFees: bigint }> {
   // first we should initialize the utxo set to the utxo set of the parent (previd)
+  if (block.previd === null) {
+    return buildUpdatedUtxo(block, { entries: [] }, objectLookup);
+  }
+
   let parentUtxo: UtxoSnapshot;
   try {
-    parentUtxo = await objectLookup.getUtxo(block.previd as string);
+    parentUtxo = await objectLookup.getUtxo(block.previd);
   } catch (error: unknown) {
     if (!isMissingReferencedObjectError(error)) {
       throw error;
@@ -135,6 +142,14 @@ async function validateTxsAndUpdateUTXO(
     );
   }
 
+  return buildUpdatedUtxo(block, parentUtxo, objectLookup);
+}
+
+async function buildUpdatedUtxo(
+  block: Block,
+  parentUtxo: UtxoSnapshot,
+  objectLookup: ObjectLookup
+): Promise<{ snapshot: UtxoSnapshot; totalFees: bigint }> {
   // We will construct the following for faster lookups
   const workingUtxo = new Map<string, UtxoEntry>();
   for (const entry of parentUtxo.entries) {
@@ -460,6 +475,19 @@ function ensureTarget(block: Block): void {
     throw new ApplicationObjectValidationError(
       "INVALID_FORMAT",
       "Block target is incorrect"
+    );
+  }
+}
+
+function ensureGenesis(block: Block): void {
+  if (block.previd !== null) {
+    return;
+  }
+
+  if (computeObjectId(block) !== GENESIS_BLOCK_ID) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_GENESIS",
+      "Only the genesis block may have a null previd"
     );
   }
 }
