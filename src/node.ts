@@ -445,6 +445,7 @@ export class MarabuNode {
     }
   }
 
+  // Reports an unexpected handler failure to the peer and records it in local logs.
   private handleConnectionFailure(
     socket: net.Socket,
     state: ConnectionState,

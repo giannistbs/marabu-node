@@ -68,6 +68,7 @@ async function validateBlockState(
   await objectLookup.putUtxo(computeObjectId(block), snapshot)
 }
 
+// Ensures every referenced txid resolves to a transaction, requesting any missing ones once.
 async function checkTxsExistence(
   block: Block,
   objectLookup: ObjectLookup
@@ -121,6 +122,7 @@ async function checkTxsExistence(
   }
 }
 
+// Loads the parent UTXO snapshot and delegates block execution against that starting state.
 async function validateTxsAndUpdateUTXO(
   block: Block,
   objectLookup: ObjectLookup
@@ -146,6 +148,7 @@ async function validateTxsAndUpdateUTXO(
   return buildUpdatedUtxo(block, parentUtxo, objectLookup);
 }
 
+// Executes block transactions in order, producing the resulting UTXO snapshot and total fees.
 async function buildUpdatedUtxo(
   block: Block,
   parentUtxo: UtxoSnapshot,
@@ -465,6 +468,7 @@ function validateTransactionConservation(
                         PRIVATE HELPERS
   //////////////////////////////////////////////////////////////*/
 
+// Returns true when a lookup failure is a missing-object error from the backing store.
 function isMissingReferencedObjectError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -475,6 +479,7 @@ function isMissingReferencedObjectError(error: unknown): boolean {
   ) || error.name === "NotFoundError";
 }
 
+// Enforces the protocol's fixed block target value.
 function ensureTarget(block: Block): void {
   if (block.T !== REQUIRED_BLOCK_TARGET) {
     throw new ApplicationObjectValidationError(
@@ -484,6 +489,7 @@ function ensureTarget(block: Block): void {
   }
 }
 
+// Rejects null-previd blocks unless they are exactly the canonical genesis block.
 function ensureGenesis(block: Block): void {
   if (block.previd !== null) {
     return;
@@ -497,6 +503,7 @@ function ensureGenesis(block: Block): void {
   }
 }
 
+// Verifies that the blockid is strictly below the declared mining target.
 function checkPOW(block: Block): void {
   const blockId = computeObjectId(block);
   const blockValue = BigInt(`0x${blockId}`);
@@ -510,6 +517,7 @@ function checkPOW(block: Block): void {
   }
 }
 
+// Finds the unique coinbase transaction, if any, and enforces that it appears first.
 async function checkCoinbaseTxPosition(
   block: Block,
   objectLookup: ObjectLookup
@@ -552,6 +560,7 @@ async function checkCoinbaseTxPosition(
   return coinbaseTxid;
 }
 
+// Ensures no later transaction spends the block's coinbase transaction.
 async function checkCoinbaseTxSpending(
   block: Block,
   objectLookup: ObjectLookup,
@@ -586,6 +595,7 @@ async function checkCoinbaseTxSpending(
   }
 }
 
+// Validates the coinbase shape and checks that its output does not exceed reward plus fees.
 async function validateCoinbaseTx(
   block: Block,
   objectLookup: ObjectLookup,
@@ -641,6 +651,7 @@ async function validateCoinbaseTx(
   }
 }
 
+// Computes a transaction fee from already-resolved input outputs and declared outputs.
 function calculateTransactionFeeFromOutputs(
   transaction: Transaction,
   referencedOutputs: Output[]
@@ -658,6 +669,7 @@ function calculateTransactionFeeFromOutputs(
   return inputTotal - outputTotal;
 }
 
+// Rewrites standalone transaction validation errors to the block-level errors required by the spec.
 function remapInvalidBlockTransactionError(
   txid: string,
   error: unknown
@@ -680,6 +692,7 @@ function remapInvalidBlockTransactionError(
   }
 }
 
+// Retrieves a transaction referenced by a block, rejecting unknown or mistyped objects.
 async function getBlockTransaction(
   txid: string,
   objectLookup: ObjectLookup
@@ -708,12 +721,14 @@ async function getBlockTransaction(
   return referencedObject;
 }
 
+// Narrows a transaction object to coinbase form based on the presence of height.
 function isCoinbaseTransaction(
   transaction: Transaction | CoinbaseTransaction
 ): transaction is CoinbaseTransaction {
   return "height" in transaction;
 }
 
+// Pauses validation briefly to give peers time to answer outstanding getobject requests.
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)

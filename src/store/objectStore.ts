@@ -114,6 +114,7 @@ export class ObjectStore {
     }
   }
 
+  // Seeds the database with the canonical genesis block and its empty post-state UTXO set.
   private async seedGenesis(): Promise<void> {
     const GENESIS_ID = computeObjectId(GENESIS_BLOCK)
     const hasGenesis = await this.hasObject(GENESIS_ID);
