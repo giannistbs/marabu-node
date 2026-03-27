@@ -9,7 +9,8 @@ import type {
   ErrorMessage,
   GetObjectMessage,
   IHaveObjectMessage,
-  ObjectMessage
+  ObjectMessage,
+  UtxoSnapshot
 } from "./types.js";
 import {
   ApplicationObjectValidationError,
@@ -141,6 +142,7 @@ export class MarabuNode {
       await validateApplicationObjectState(message.object, {
         getObject: (key: string) => this.objectStore.getObject(key),
         getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
+        putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
         requestObject: (objectId: string) => this.sendGetObjectToAllPeers(objectId)
       });
       const objectId = computeObjectId(message.object);
