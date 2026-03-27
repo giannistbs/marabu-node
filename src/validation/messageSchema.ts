@@ -29,6 +29,8 @@ import {
 const HELLO_VERSION_PATTERN = /^0\.10\.\d+$/;
 const OBJECT_ID_PATTERN = /^[a-f0-9]{64}$/;
 const ED25519_SIGNATURE_PATTERN = /^[a-f0-9]{128}$/;
+const BLOCK_NONCE_PATTERN = /^[a-f0-9]{1,64}$/;
+const ASCII_PRINTABLE_PATTERN = /^[ -~]*$/;
 
 
 // Dispatches stateless wire validation by message type and returns a typed protocol union.
@@ -258,8 +260,13 @@ function validateBlockMessage(value: RecordValue): Block {
   }
 
   const created = assertNonNegativeInteger(value.created, "block.created");
-  const nonce = assertString(value.nonce, "block.nonce");
-  const previd = assertString(value.previd, "block.previd");
+  const nonce = assertHexString(
+    value.nonce,
+    "block.nonce",
+    BLOCK_NONCE_PATTERN,
+    "a lowercase hexadecimal string up to 32 bytes"
+  );
+  const previd = assertBlockPrevId(value.previd, "block.previd");
   const txids = value.txids.map((txid, index) =>
     assertObjectId(txid, `block.txids[${index}]`)
   );
@@ -275,19 +282,13 @@ function validateBlockMessage(value: RecordValue): Block {
 
   // Check and add optional human-readable miner identifier, capped at 128 characters.
   if (typeof value.miner !== "undefined") {
-    const miner = assertString(value.miner, "block.miner");
-    if (miner.length > 128) {
-      throw new MessageValidationError("block.miner must have a maximum of 128 characters");
-    }
+    const miner = assertPrintableString(value.miner, "block.miner");
     block.miner = miner;
   }
 
   // Check and add optional note attached to the block, capped at 128 characters.
   if (typeof value.note !== "undefined") {
-    const note = assertString(value.note, "block.note");
-    if (note.length > 128) {
-      throw new MessageValidationError("block.note must have a maximum of 128 characters");
-    }
+    const note = assertPrintableString(value.note, "block.note");
     block.note = note;
   }
 
@@ -297,7 +298,7 @@ function validateBlockMessage(value: RecordValue): Block {
       throw new MessageValidationError("block.studentids must have a maximum of 10 elements");
     }
     block.studentids = value.studentids.map((id, index) =>
-      assertString(id, `block.studentids[${index}]`)
+      assertPrintableString(id, `block.studentids[${index}]`)
     );
   }
 
@@ -354,6 +355,14 @@ function assertObjectId(value: unknown, fieldName: string): string {
   return objectId;
 }
 
+function assertBlockPrevId(value: unknown, fieldName: string): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  return assertObjectId(value, fieldName);
+}
+
 // Asserts that a field is a hex-encoded Ed25519 signature.
 function assertSignature(value: unknown, fieldName: string): string {
   return assertHexString(
@@ -389,6 +398,20 @@ function assertPublicKey(value: unknown, fieldName: string): string {
   }
 
   return pubkey;
+}
+
+function assertPrintableString(value: unknown, fieldName: string): string {
+  const stringValue = assertString(value, fieldName);
+  if (stringValue.length > 128) {
+    throw new MessageValidationError(`${fieldName} must have a maximum of 128 characters`);
+  }
+  if (!ASCII_PRINTABLE_PATTERN.test(stringValue)) {
+    throw new MessageValidationError(
+      `${fieldName} must be an ASCII-printable string`
+    );
+  }
+
+  return stringValue;
 }
 
     /*//////////////////////////////////////////////////////////////
