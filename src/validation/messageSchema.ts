@@ -241,7 +241,7 @@ function validateTransactionMessage(value: RecordValue): Transaction {
   };
 }
 
-// Validates a standard transaction (must include both inputs and outputs).
+// Validates a block object and normalizes its optional human-readable metadata fields.
 function validateBlockMessage(value: RecordValue): Block {
   assertExactKeys(value, ["type", "T", "created", "nonce", "previd", "txids"], ["miner", "note", "studentids"]);
   if (value.type !== "block") {
@@ -355,6 +355,7 @@ function assertObjectId(value: unknown, fieldName: string): string {
   return objectId;
 }
 
+// Accepts either a blockid string or null for the genesis block's previd field.
 function assertBlockPrevId(value: unknown, fieldName: string): string | null {
   if (value === null) {
     return null;
@@ -400,6 +401,7 @@ function assertPublicKey(value: unknown, fieldName: string): string {
   return pubkey;
 }
 
+// Asserts that a field is ASCII-printable and within the protocol's 128-character limit.
 function assertPrintableString(value: unknown, fieldName: string): string {
   const stringValue = assertString(value, fieldName);
   if (stringValue.length > 128) {
