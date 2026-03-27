@@ -56,10 +56,11 @@ async function validateBlockState(
   ensureTarget(block);
   checkPOW(block);
   await checkTxsExistence(block, objectLookup)
-  await checkCoinbaseTxPosition(block, objectLookup)
-  await checkCoinbaseTxSpending(block, objectLookup)
-  await validateCoinbaseTx(block, objectLookup)
-  await validateTxsAndUpdateUTXO(block, objectLookup)
+  const coinbaseTxid = await checkCoinbaseTxPosition(block, objectLookup)
+  await checkCoinbaseTxSpending(block, objectLookup, coinbaseTxid)
+  const { snapshot, totalFees } = await validateTxsAndUpdateUTXO(block, objectLookup)
+  await validateCoinbaseTx(block, objectLookup, totalFees)
+  await objectLookup.putUtxo(computeObjectId(block), snapshot)
 }
 
 async function checkTxsExistence(
@@ -115,9 +116,131 @@ async function checkTxsExistence(
   }
 }
 
-/*//////////////////////////////////////////////////////////////
-                    TRANSACTION VALIDATION
-//////////////////////////////////////////////////////////////*/
+async function validateTxsAndUpdateUTXO(
+  block: Block,
+  objectLookup: ObjectLookup
+): Promise<{ snapshot: UtxoSnapshot; totalFees: bigint }> {
+  // first we should initialize the utxo set to the utxo set of the parent (previd)
+
+  const parentUtxo: UtxoSnapshot = await objectLookup.getUtxo(block.previd as string);
+
+  // We will construct the following for faster lookups
+  const workingUtxo = new Map<string, UtxoEntry>();
+  for (const entry of parentUtxo.entries) {
+    workingUtxo.set(`${entry.outpoint.txid}:${entry.outpoint.index}`, entry);
+  }
+
+  let totalFees = 0n;
+
+
+  // Now update the Utxo Set
+  for (const txid of block.txids) {
+    const transaction  = await objectLookup.getObject(txid);
+
+    if (transaction.type !== "transaction") {
+      throw new ApplicationObjectValidationError(
+        "UNFINDABLE_OBJECT",
+        `Referenced object ${txid} is not a transaction`
+      );
+    }
+
+    // Flow for regular Txs
+    if (!("height" in transaction)) {
+
+
+      const signingPayload = encodeTransactionSigningPayload(transaction);
+      // Step 1
+      validateOutputs(transaction.outputs);
+      // Step 2
+      const referencedOutputs = resolveOutpointsFromUtxo(transaction, workingUtxo);
+      // Step 3
+      await validateTransactionInputSignatures(
+        transaction,
+        referencedOutputs,
+        signingPayload
+      );
+      // Step 4
+      validateTransactionConservation(transaction, referencedOutputs);
+      totalFees += calculateTransactionFeeFromOutputs(
+        transaction,
+        referencedOutputs
+      );
+
+
+
+      // inputs -- delete
+      for (const input of transaction.inputs) {
+        workingUtxo.delete(`${input.outpoint.txid}:${input.outpoint.index}`);
+      }
+
+      // outputs -- add
+      for (const [outputIndex, output] of transaction.outputs.entries()) {
+        workingUtxo.set(`${txid}:${outputIndex}`, {
+          outpoint: { txid: txid, index: outputIndex },
+          output
+        });
+      }
+
+
+    } else {
+      // Flow for coinbase txs
+      const coinbaseOutput = transaction.outputs[0];
+      if (coinbaseOutput === undefined) {
+        throw new ApplicationObjectValidationError(
+          "INVALID_BLOCK_COINBASE",
+          `Coinbase transaction ${txid} is missing its first output`
+        );
+      }
+      workingUtxo.set(`${txid}:0`, {
+        outpoint: { txid: txid, index: 0 },
+        output: coinbaseOutput
+      });
+    }
+
+
+  }
+
+  const snapshot: UtxoSnapshot = {
+    entries: [...workingUtxo.values()]
+  };
+  return { snapshot, totalFees }
+}
+
+
+// Resolves each input's outpoint to the referenced output from the current UTXO map.
+function resolveOutpointsFromUtxo(
+  transaction: Transaction,
+  utxoMap: Map<string, UtxoEntry>
+): Output[] {
+  const referencedOutputs: Output[] = [];
+
+  for (let index = 0; index < transaction.inputs.length; index += 1) {
+    const input = transaction.inputs[index];
+    if (input === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INTERNAL_ERROR",
+        `Missing transaction input at index ${index}`
+      );
+    }
+
+    const key = `${input.outpoint.txid}:${input.outpoint.index}`;
+    const entry = utxoMap.get(key);
+    if (entry === undefined) {
+      throw new ApplicationObjectValidationError(
+        "INVALID_TX_OUTPOINT",
+        `Referenced output ${key} is not in the UTXO set`
+      );
+    }
+
+    referencedOutputs.push(entry.output);
+  }
+
+  return referencedOutputs;
+}
+
+  /*//////////////////////////////////////////////////////////////
+                     TRANSACTION VALIDATION
+  //////////////////////////////////////////////////////////////*/
 
 // Validates input signatures and referenced outputs for a transaction.
 async function validateTransactionState(
@@ -346,8 +469,9 @@ function checkPOW(block: Block): void {
 async function checkCoinbaseTxPosition(
   block: Block,
   objectLookup: ObjectLookup
-): Promise<void> {
+): Promise<string | null> {
   let coinbaseIndex: number | null = null;
+  let coinbaseTxid: string | null = null;
 
   for (let index = 0; index < block.txids.length; index += 1) {
     const txid = block.txids[index];
@@ -371,6 +495,7 @@ async function checkCoinbaseTxPosition(
     }
 
     coinbaseIndex = index;
+    coinbaseTxid = txid;
   }
 
   if (coinbaseIndex !== null && coinbaseIndex !== 0) {
@@ -379,13 +504,19 @@ async function checkCoinbaseTxPosition(
       "Coinbase transaction must be at index 0"
     );
   }
+
+  return coinbaseTxid;
 }
 
 async function checkCoinbaseTxSpending(
   block: Block,
-  objectLookup: ObjectLookup
+  objectLookup: ObjectLookup,
+  coinbaseTxid: string | null
 ): Promise<void> {
-  const coinbaseTxid = block.txids[0];
+  if (coinbaseTxid === null) {
+    return;
+  }
+
   for (let index = 1; index < block.txids.length; index += 1) {
     const txid = block.txids[index];
     if (txid === undefined) {
@@ -413,7 +544,8 @@ async function checkCoinbaseTxSpending(
 
 async function validateCoinbaseTx(
   block: Block,
-  objectLookup: ObjectLookup
+  objectLookup: ObjectLookup,
+  totalFees: bigint
 ): Promise<void> {
   const coinbaseTxid = block.txids[0];
   if (coinbaseTxid === undefined) {
@@ -448,24 +580,6 @@ async function validateCoinbaseTx(
 
   validateOutputs(firstTransaction.outputs);
 
-  let totalFees = 0n;
-  for (let index = 1; index < block.txids.length; index += 1) {
-    const txid = block.txids[index];
-    if (txid === undefined) {
-      throw new ApplicationObjectValidationError(
-        "INTERNAL_ERROR",
-        `Missing block txid at index ${index}`
-      );
-    }
-
-    const transaction = await getBlockTransaction(txid, objectLookup);
-    if (isCoinbaseTransaction(transaction)) {
-      continue;
-    }
-
-    totalFees += await calculateTransactionFee(transaction, objectLookup);
-  }
-
   const coinbaseOutput = firstTransaction.outputs[0];
   if (coinbaseOutput === undefined) {
     throw new ApplicationObjectValidationError(
@@ -483,49 +597,12 @@ async function validateCoinbaseTx(
   }
 }
 
-async function calculateTransactionFee(
+function calculateTransactionFeeFromOutputs(
   transaction: Transaction,
-  objectLookup: ObjectLookup
-): Promise<bigint> {
+  referencedOutputs: Output[]
+): bigint {
   let inputTotal = 0n;
-  for (let index = 0; index < transaction.inputs.length; index += 1) {
-    const input = transaction.inputs[index];
-    if (input === undefined) {
-      throw new ApplicationObjectValidationError(
-        "INTERNAL_ERROR",
-        `Missing transaction input at index ${index}`
-      );
-    }
-
-    let referencedObject: ApplicationObject;
-    try {
-      referencedObject = await objectLookup.getObject(input.outpoint.txid);
-    } catch (error: unknown) {
-      if (!isMissingReferencedObjectError(error)) {
-        throw error;
-      }
-
-      throw new ApplicationObjectValidationError(
-        "UNKNOWN_OBJECT",
-        `Referenced transaction ${input.outpoint.txid} is unknown`
-      );
-    }
-
-    if (referencedObject.type !== "transaction") {
-      throw new ApplicationObjectValidationError(
-        "INVALID_TX_OUTPOINT",
-        `Referenced object ${input.outpoint.txid} is not a transaction`
-      );
-    }
-
-    const referencedOutput = referencedObject.outputs[input.outpoint.index];
-    if (referencedOutput === undefined) {
-      throw new ApplicationObjectValidationError(
-        "INVALID_TX_OUTPOINT",
-        `Referenced output ${input.outpoint.txid}:${input.outpoint.index} is out of range`
-      );
-    }
-
+  for (const referencedOutput of referencedOutputs) {
     inputTotal += BigInt(referencedOutput.value);
   }
 
