@@ -59,7 +59,7 @@ async function validateBlockState(
   await checkCoinbaseTxPosition(block, objectLookup)
   await checkCoinbaseTxSpending(block, objectLookup)
   await validateCoinbaseTx(block, objectLookup)
-  // await validateTxsAndUpdateUTXO(block, objectLookup)
+  await validateTxsAndUpdateUTXO(block, objectLookup)
 }
 
 async function checkTxsExistence(
