@@ -5,6 +5,7 @@ import { computeObjectId } from "./protocol/hashing.js";
 import { isMissingObjectStoreError, ObjectStore } from "./store/objectStore.js";
 import { PeerStore } from "./store/peerStore.js";
 import type {
+  ApplicationObject,
   AnyMessage,
   ErrorMessage,
   GetObjectMessage,
@@ -27,12 +28,18 @@ interface ConnectionState {
   helloReceived: boolean;
   outbound: boolean;
   peerLabel: string;
-  processing: Promise<void>;
+  inFlightHandlers: Set<Promise<void>>;
+}
+
+interface ObjectWaiter {
+  resolve: (object: ApplicationObject) => void;
+  reject: (error: Error) => void;
 }
 
 export class MarabuNode {
   private readonly server: net.Server;
   private readonly connections = new Map<net.Socket, ConnectionState>();
+  private readonly pendingObjectWaiters = new Map<string, Set<ObjectWaiter>>();
   private readonly outboundSocketsByPeer = new Map<string, net.Socket>();
   private readonly dialingPeers = new Set<string>();
   private readonly failedAttemptsByPeer = new Map<string, number>();
@@ -144,7 +151,9 @@ export class MarabuNode {
         getObject: (key: string) => this.objectStore.getObject(key),
         getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
         putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
-        requestObject: (objectId: string) => this.sendGetObjectToAllPeers(objectId)
+        requestObject: (objectId: string) => this.sendGetObjectToAllPeers(objectId),
+        waitForObject: (objectId: string, timeoutMs: number) =>
+          this.waitForObject(objectId, timeoutMs)
       });
       const objectId = computeObjectId(message.object);
       if (await this.objectStore.hasObject(objectId)) {
@@ -152,6 +161,7 @@ export class MarabuNode {
       }
 
       await this.objectStore.putObject(objectId, message.object);
+      this.resolveObjectWaiters(objectId, message.object);
       this.sendIHaveObjectToAllPeers(objectId);
       return true;
     } catch (error) {
@@ -218,6 +228,102 @@ export class MarabuNode {
     });
   }
 
+  // Waits for a missing object to be stored while the event loop keeps processing messages.
+  private async waitForObject(
+    objectId: string,
+    timeoutMs: number
+  ): Promise<ApplicationObject> {
+    try {
+      return await this.objectStore.getObject(objectId);
+    } catch (error: unknown) {
+      if (!isMissingObjectStoreError(error)) {
+        throw error;
+      }
+    }
+
+    return await new Promise<ApplicationObject>((resolve, reject) => {
+      const waiters = this.pendingObjectWaiters.get(objectId) ?? new Set<ObjectWaiter>();
+
+      const removeWaiter = (): void => {
+        waiters.delete(waiter);
+        if (waiters.size === 0) {
+          this.pendingObjectWaiters.delete(objectId);
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        removeWaiter();
+        const error = new Error(`Timed out waiting for object ${objectId}`);
+        error.name = "ObjectWaitTimeoutError";
+        reject(error);
+      }, timeoutMs);
+
+      const waiter: ObjectWaiter = {
+        resolve: (object) => {
+          clearTimeout(timeout);
+          removeWaiter();
+          resolve(object);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          removeWaiter();
+          reject(error);
+        }
+      };
+
+      waiters.add(waiter);
+      this.pendingObjectWaiters.set(objectId, waiters);
+
+      // Re-check after registering the waiter so we do not miss a just-arrived object.
+      void this.objectStore
+        .getObject(objectId)
+        .then((object) => {
+          this.resolveObjectWaiters(objectId, object);
+        })
+        .catch((error: unknown) => {
+          if (isMissingObjectStoreError(error)) {
+            return;
+          }
+
+          const failure = error instanceof Error ? error : new Error(String(error));
+          this.rejectObjectWaiters(objectId, failure);
+        });
+    });
+  }
+
+  // Resolves all waiters that were blocked on the given object ID.
+  private resolveObjectWaiters(objectId: string, object: ApplicationObject): void {
+    const waiters = this.pendingObjectWaiters.get(objectId);
+    if (waiters === undefined) {
+      return;
+    }
+
+    this.pendingObjectWaiters.delete(objectId);
+    for (const waiter of waiters) {
+      waiter.resolve(object);
+    }
+  }
+
+  // Rejects all waiters for a single object ID.
+  private rejectObjectWaiters(objectId: string, error: Error): void {
+    const waiters = this.pendingObjectWaiters.get(objectId);
+    if (waiters === undefined) {
+      return;
+    }
+
+    this.pendingObjectWaiters.delete(objectId);
+    for (const waiter of waiters) {
+      waiter.reject(error);
+    }
+  }
+
+  // Rejects every outstanding object wait when the node is shutting down.
+  private rejectAllPendingObjectWaiters(error: Error): void {
+    for (const objectId of this.pendingObjectWaiters.keys()) {
+      this.rejectObjectWaiters(objectId, error);
+    }
+  }
+
 
 
 
@@ -279,8 +385,8 @@ export class MarabuNode {
 
     // Collect pending processing promises before destroying sockets so we can
     // wait for in-flight handlers to settle before closing the object store.
-    const pendingProcessing = Array.from(this.connections.values()).map(
-      (state) => state.processing
+    const pendingProcessing = Array.from(this.connections.values()).flatMap(
+      (state) => Array.from(state.inFlightHandlers)
     );
 
     // Destroy all active sockets so in-flight handlers terminate promptly.
@@ -290,6 +396,7 @@ export class MarabuNode {
     this.connections.clear();
     this.outboundSocketsByPeer.clear();
     this.dialingPeers.clear();
+    this.rejectAllPendingObjectWaiters(new Error("Node is stopping"));
 
     // Wait for any in-flight message handlers to finish before closing the
     // object store; this prevents LevelDB errors on CI where disk I/O is slow.
@@ -328,7 +435,7 @@ export class MarabuNode {
       helloReceived: false,
       outbound,
       peerLabel: outboundPeer ?? this.describeSocket(socket),
-      processing: Promise.resolve()
+      inFlightHandlers: new Set()
     };
 
     this.nextConnectionId += 1;
@@ -345,32 +452,11 @@ export class MarabuNode {
     // Accumulate stream data and parse line-delimited messages.
     socket.on("data", (chunk) => {
       const textChunk = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      state.processing = state.processing
-        .then(() => this.handleData(socket, textChunk))
-        .catch((error: unknown) => {
-          const description =
-            error instanceof Error ? error.message : "Unexpected connection error";
-          try {
-            this.sendErrorAndClose(socket, {
-              type: "error",
-              name: "INTERNAL_ERROR",
-              description
-            });
-          } catch (closeError) {
-            logError(
-              `[connection ${state.id}] close failed: ${
-                closeError instanceof Error ? closeError.message : String(closeError)
-              }`
-            );
-          }
-
-          logError(
-            `[connection ${state.id}] handleData failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
-          return undefined;
-        });
+      try {
+        this.handleData(socket, textChunk);
+      } catch (error: unknown) {
+        this.handleConnectionFailure(socket, state, error);
+      }
     });
 
     socket.on("error", (error) => {
@@ -401,7 +487,7 @@ export class MarabuNode {
   }
 
   // Buffers stream chunks into complete protocol lines and dispatches messages.
-  private async handleData(socket: net.Socket, chunk: string): Promise<void> {
+  private handleData(socket: net.Socket, chunk: string): void {
     const state = this.connections.get(socket);
     if (state === undefined || socket.destroyed) {
       return;
@@ -447,13 +533,51 @@ export class MarabuNode {
         return;
       }
 
-      // Dispatch a validated message
-      const keepConnection = await this.handleValidatedMessage(socket, state, message);
-      // Stops the processing loop if the handler closed the socket or the message was invalid.
-      if (!keepConnection) {
-        return;
-      }
+      // Start the handler and let awaited work resume later without blocking this socket.
+      const handler = this.handleValidatedMessage(socket, state, message)
+        .then((keepConnection) => {
+          if (!keepConnection) {
+            return;
+          }
+        })
+        .catch((error: unknown) => {
+          this.handleConnectionFailure(socket, state, error);
+        })
+        .finally(() => {
+          state.inFlightHandlers.delete(handler);
+        });
+
+      state.inFlightHandlers.add(handler);
     }
+  }
+
+  // Reports an unexpected handler failure to the peer and records it in local logs.
+  private handleConnectionFailure(
+    socket: net.Socket,
+    state: ConnectionState,
+    error: unknown
+  ): void {
+    const description =
+      error instanceof Error ? error.message : "Unexpected connection error";
+    try {
+      this.sendErrorAndClose(socket, {
+        type: "error",
+        name: "INTERNAL_ERROR",
+        description
+      });
+    } catch (closeError) {
+      logError(
+        `[connection ${state.id}] close failed: ${
+          closeError instanceof Error ? closeError.message : String(closeError)
+        }`
+      );
+    }
+
+    logError(
+      `[connection ${state.id}] handleData failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
   }
 
   // Encodes and writes a protocol message unless the socket is already closed.

@@ -22,6 +22,7 @@ const REQUIRED_BLOCK_TARGET =
   "00000000abc00000000000000000000000000000000000000000000000000000";
 const BLOCK_REWARD = 50_000_000_000_000n;
 const GENESIS_BLOCK_ID = computeObjectId(GENESIS_BLOCK);
+const MISSING_BLOCK_TX_WAIT_MS = 3_500;
 
 
   /*//////////////////////////////////////////////////////////////
@@ -67,58 +68,22 @@ async function validateBlockState(
   await objectLookup.putUtxo(computeObjectId(block), snapshot)
 }
 
-// Ensures every referenced txid resolves to a transaction, requesting any missing ones once.
+// Ensures every referenced txid resolves to a transaction, waiting for missing ones to arrive.
 async function checkTxsExistence(
   block: Block,
   objectLookup: ObjectLookup
 ): Promise<void> {
-  const missingTxids: string[] = []
-
-  for (const txid of block.txids) {
-    try {
-      const object = await objectLookup.getObject(txid)
+  await Promise.all(
+    block.txids.map(async (txid) => {
+      const object = await findBlockTransactionObject(txid, objectLookup);
       if (object.type !== "transaction") {
         throw new ApplicationObjectValidationError(
           "UNFINDABLE_OBJECT",
           `Block reference ${txid} is not a transaction`
-        )
+        );
       }
-    } catch (error: unknown) {
-      if (!isMissingReferencedObjectError(error)) {
-        throw error
-      }
-
-      objectLookup.requestObject(txid)
-      missingTxids.push(txid)
-    }
-  }
-
-  if (missingTxids.length === 0) {
-    return
-  }
-
-  await wait(3500)
-
-  for (const txid of missingTxids) {
-    try {
-      const object = await objectLookup.getObject(txid)
-      if (object.type !== "transaction") {
-        throw new ApplicationObjectValidationError(
-          "UNFINDABLE_OBJECT",
-          `Block reference ${txid} is not a transaction`
-        )
-      }
-    } catch (error: unknown) {
-      if (!isMissingReferencedObjectError(error)) {
-        throw error
-      }
-
-      throw new ApplicationObjectValidationError(
-        "UNFINDABLE_OBJECT",
-        `Referenced transaction ${txid} could not be found`
-      )
-    }
-  }
+    })
+  );
 }
 
 // Loads the parent UTXO snapshot and delegates block execution against that starting state.
@@ -478,6 +443,43 @@ function isMissingReferencedObjectError(error: unknown): boolean {
   ) || error.name === "NotFoundError";
 }
 
+// Returns true when waiting for a requested object exceeded the allowed timeout.
+function isObjectWaitTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.name === "ObjectWaitTimeoutError";
+}
+
+// Loads a block transaction immediately or waits for it to arrive after requesting it.
+async function findBlockTransactionObject(
+  txid: string,
+  objectLookup: ObjectLookup
+): Promise<ApplicationObject> {
+  try {
+    return await objectLookup.getObject(txid);
+  } catch (error: unknown) {
+    if (!isMissingReferencedObjectError(error)) {
+      throw error;
+    }
+  }
+
+  objectLookup.requestObject(txid);
+
+  try {
+    return await objectLookup.waitForObject(txid, MISSING_BLOCK_TX_WAIT_MS);
+  } catch (error: unknown) {
+    if (
+      !isMissingReferencedObjectError(error) &&
+      !isObjectWaitTimeoutError(error)
+    ) {
+      throw error;
+    }
+
+    throw new ApplicationObjectValidationError(
+      "UNFINDABLE_OBJECT",
+      `Referenced transaction ${txid} could not be found`
+    );
+  }
+}
+
 // Enforces the protocol's fixed block target value.
 function ensureTarget(block: Block): void {
   if (block.T !== REQUIRED_BLOCK_TARGET) {
@@ -727,17 +729,6 @@ function isCoinbaseTransaction(
   return "height" in transaction;
 }
 
-// Pauses validation briefly to give peers time to answer outstanding getobject requests.
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
-}
-
-
-
-
-
   /*//////////////////////////////////////////////////////////////
                             TYPES
   //////////////////////////////////////////////////////////////*/
@@ -769,4 +760,5 @@ interface ObjectLookup {
   getUtxo(blockId: string): Promise<UtxoSnapshot>;
   putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void>;
   requestObject(objectId: string): void;
+  waitForObject(objectId: string, timeoutMs: number): Promise<ApplicationObject>;
 }
