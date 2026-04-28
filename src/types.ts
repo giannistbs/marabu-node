@@ -71,6 +71,14 @@ export interface Block {
   type: "block";
 }
 
+export interface BlockWithMetadata {
+  type: "blockwithmetadata";
+  block: Block;
+  height: number;
+  receivedAt?: number;
+  receivedFrom?: string;
+}
+
 export const GENESIS_BLOCK = {
   T: "00000000abc00000000000000000000000000000000000000000000000000000",
   created: 1771159355,
@@ -124,7 +132,7 @@ export interface CoinbaseTransaction {
   outputs: Output[];
 }
 
-export type ApplicationObject = Transaction | CoinbaseTransaction | Block; 
+export type ApplicationObject = Transaction | CoinbaseTransaction | Block | BlockWithMetadata; 
 
 export interface ObjectMessage {
   type: "object";
