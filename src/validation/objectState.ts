@@ -2,6 +2,7 @@ import * as ed from "@noble/ed25519";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { encodeTransactionSigningPayload } from "../protocol/codec.js";
 import {
+  BlockWithMetadata,
   GENESIS_BLOCK,
   type ApplicationObject,
   type Block,
@@ -17,12 +18,14 @@ import {
   isValidEd25519PublicKey
 } from "./utils.js";
 import { computeObjectId } from "../protocol/hashing.js";
+import { error } from "node:console";
 
 const REQUIRED_BLOCK_TARGET =
   "00000000abc00000000000000000000000000000000000000000000000000000";
 const BLOCK_REWARD = 50_000_000_000_000n;
 const GENESIS_BLOCK_ID = computeObjectId(GENESIS_BLOCK);
 const MISSING_BLOCK_TX_WAIT_MS = 3_500;
+const MISSING_BLOCK_WAIT_MS = 7_500;
 
 
   /*//////////////////////////////////////////////////////////////
@@ -33,19 +36,23 @@ const MISSING_BLOCK_TX_WAIT_MS = 3_500;
 export async function validateApplicationObjectState(
   object: ApplicationObject,
   objectLookup: ObjectLookup
-): Promise<void> {
+): Promise<ApplicationObject> {
 
   if (object.type === "transaction") {
     if ("height" in object) {
       validateOutputs(object.outputs);
-      return;
+      return object;
     }
     await validateTransactionState(object, objectLookup);
+    return object;
   } else if (object.type === "block") {
-    await validateBlockState(object, objectLookup);
+    return await validateBlockState(object, objectLookup);
+  } else {
+    throw new ApplicationObjectValidationError(
+      "INVALID_FORMAT",
+      `Object type unknown`
+    );
   }
-  return;
-
 }
 
   /*//////////////////////////////////////////////////////////////
@@ -56,16 +63,38 @@ export async function validateApplicationObjectState(
 async function validateBlockState(
   block: Block,
   objectLookup: ObjectLookup
-): Promise<void> {
+): Promise<BlockWithMetadata> {
   ensureTarget(block);
   checkPOW(block);
-  ensureGenesis(block);
+  const parentBlock = await checkPrevId(block, objectLookup);
+  checkTimestampValidity(block, parentBlock.block);
   await checkTxsExistence(block, objectLookup)
-  const coinbaseTxid = await checkCoinbaseTxPosition(block, objectLookup)
+  const coinbaseTxid = await checkCoinbaseTxPosition(block, parentBlock.height + 1, objectLookup)
   await checkCoinbaseTxSpending(block, objectLookup, coinbaseTxid)
   const { snapshot, totalFees } = await validateTxsAndUpdateUTXO(block, objectLookup)
   await validateCoinbaseTx(block, objectLookup, totalFees)
   await objectLookup.putUtxo(computeObjectId(block), snapshot)
+
+  return {
+    type: "blockwithmetadata",
+    block,
+    height: parentBlock.height + 1
+  };
+}
+
+function checkTimestampValidity(
+  block: Block,
+  parentBlock: Block
+): void {
+  if (
+    block.created <= parentBlock.created ||
+    block.created >= Math.floor(Date.now() / 1000)
+  ) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_BLOCK_TIMESTAMP",
+      `Block timestamp is wrong for block ${computeObjectId(block)}.`
+    );
+  }
 }
 
 // Ensures every referenced txid resolves to a transaction, waiting for missing ones to arrive.
@@ -518,9 +547,80 @@ function checkPOW(block: Block): void {
   }
 }
 
+async function checkPrevId(block: Block, objectLookup: ObjectLookup): Promise<BlockWithMetadata> {
+
+  // ensure genesis
+  if (block.previd == null && computeObjectId(block) !== GENESIS_BLOCK_ID) {
+    throw new ApplicationObjectValidationError(
+      "INVALID_GENESIS",
+      "Only the genesis block may have a null previd"
+    );
+  } else if (block.previd == null && computeObjectId(block) == GENESIS_BLOCK_ID ) {
+    return {
+      type: "blockwithmetadata",
+      block: GENESIS_BLOCK,
+      height: 0
+    }
+  }
+
+  const parentId = block.previd;
+  // The following check is kinda redundant but we do it so typescript doesnt complain
+  if (parentId === null) {
+    throw new ApplicationObjectValidationError(
+      "INTERNAL_ERROR",
+      "Expected non-null previd after genesis handling"
+    );
+  }
+
+  // here we should check if the parent block is available in our db
+  // if it is not available we should request our peers for the parent block using getobject message
+  try {
+    const requestedObject = await objectLookup.getObject(parentId);
+    if (requestedObject.type == "blockwithmetadata") {
+      return requestedObject;
+    } else {
+      throw new ApplicationObjectValidationError(
+        "UNFINDABLE_OBJECT",
+        "Wrong object on previd"
+      );
+    }
+  } catch (error: unknown) {
+    if (!isMissingReferencedObjectError(error)) {
+      throw error;
+    }
+  }
+
+  objectLookup.requestObject(parentId);
+
+  try {
+    const waited = await objectLookup.waitForObject(parentId, MISSING_BLOCK_WAIT_MS);
+    if (waited.type === "blockwithmetadata") {
+      return waited;
+    }
+    throw new ApplicationObjectValidationError(
+      "UNFINDABLE_OBJECT",
+      "Wrong object on previd"
+    );
+  } catch (error: unknown) {
+    if (
+      !isMissingReferencedObjectError(error) &&
+      !isObjectWaitTimeoutError(error)
+    ) {
+      throw error;
+    }
+
+    throw new ApplicationObjectValidationError(
+      "UNFINDABLE_OBJECT",
+      `Parent block ${parentId} could not be found`
+    );
+  }
+  
+}
+
 // Finds the unique coinbase transaction, if any, and enforces that it appears first.
 async function checkCoinbaseTxPosition(
   block: Block,
+  correctHeight: number,
   objectLookup: ObjectLookup
 ): Promise<string | null> {
   let coinbaseIndex: number | null = null;
@@ -544,6 +644,13 @@ async function checkCoinbaseTxPosition(
       throw new ApplicationObjectValidationError(
         "INVALID_BLOCK_COINBASE",
         "Block contains more than one coinbase transaction"
+      );
+    }
+
+    if (transaction.height !== correctHeight) {
+      throw new ApplicationObjectValidationError(
+        "INVALID_BLOCK_COINBASE",
+        "Coinbase tx has the wrong height"
       );
     }
 

@@ -125,7 +125,10 @@ export class MarabuNode {
   private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
     const objectId = message.objectid;
     try {
-      const object = await this.objectStore.getObject(objectId);
+      let object = await this.objectStore.getObject(objectId);
+      if (object.type === "blockwithmetadata") {
+        object = object.block;
+      }
       this.sendMessage(socket, {
         type: "object",
         object
@@ -134,7 +137,6 @@ export class MarabuNode {
       if (isMissingObjectStoreError(error)) {
         return true;
       }
-
       throw error;
     }
 
@@ -147,7 +149,7 @@ export class MarabuNode {
     message: ObjectMessage
   ): Promise<boolean> {
     try {
-      await validateApplicationObjectState(message.object, {
+      const objectToSave = await validateApplicationObjectState(message.object, {
         getObject: (key: string) => this.objectStore.getObject(key),
         getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
         putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
@@ -155,13 +157,13 @@ export class MarabuNode {
         waitForObject: (objectId: string, timeoutMs: number) =>
           this.waitForObject(objectId, timeoutMs)
       });
-      const objectId = computeObjectId(message.object);
+      const objectId = computeObjectId(objectToSave);
       if (await this.objectStore.hasObject(objectId)) {
         return true;
       }
 
-      await this.objectStore.putObject(objectId, message.object);
-      this.resolveObjectWaiters(objectId, message.object);
+      await this.objectStore.putObject(objectId, objectToSave);
+      this.resolveObjectWaiters(objectId, objectToSave);
       this.sendIHaveObjectToAllPeers(objectId);
       return true;
     } catch (error) {
