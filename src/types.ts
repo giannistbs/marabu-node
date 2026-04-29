@@ -50,14 +50,14 @@ export interface IHaveObjectMessage {
 //   txids: string[];
 // }
 
-// export interface GetChainTip {
-//   type: "getchaintip";
-// }
+export interface GetChainTip {
+  type: "getchaintip";
+}
 
-// export interface ChainTip {
-//   type: "chaintip";
-//   blockid: string;
-// }
+export interface ChainTip {
+  type: "chaintip";
+  blockid: string;
+}
 
 export interface Block {
   T: string;
@@ -148,7 +148,7 @@ export type AnyMessage =
   | GetObjectMessage
   | IHaveObjectMessage
   | ObjectMessage
+  | GetChainTip
+  | ChainTip;
   // | GetMemPool
   // | Mempool
-  // | GetChainTip
-  // | ChainTip;
