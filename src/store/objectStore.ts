@@ -150,6 +150,10 @@ export class ObjectStore {
       await this.putObject(GENESIS_ID, genesisWithMetadata);
       await this.putUtxo(GENESIS_ID, { entries: [] });
     }
+
+    if (!await this.hasValue(CHAIN_TIP_KEY)) {
+      await this.putChainTip(GENESIS_ID);
+    }
   }
   
 
