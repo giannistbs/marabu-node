@@ -7,7 +7,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test \"test/**/*.test.ts\""
+    "test": "find test -name '*.test.ts' -print | xargs node --import tsx --test"
   },
   "dependencies": {
     "@noble/ed25519": "^3.0.0",
