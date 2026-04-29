@@ -133,6 +133,8 @@ async function validateTxsAndUpdateUTXO(
       throw error;
     }
 
+    // If metadata exists without the corresponding UTXO snapshot, treat the parent
+    // state as unavailable so the caller can report UNFINDABLE_OBJECT to the peer.
     throw new MissingParentBlockError(
       `Missing parent UTXO for block ${computeObjectId(block)}`
     );
@@ -549,7 +551,7 @@ function checkPOW(block: Block): void {
 
 async function checkPrevId(block: Block, objectLookup: ObjectLookup): Promise<BlockWithMetadata> {
 
-  // ensure genesis
+  // The assumption here is that genesis is locally seeded and not learned from peers during normal sync.
   if (block.previd == null && computeObjectId(block) !== GENESIS_BLOCK_ID) {
     throw new ApplicationObjectValidationError(
       "INVALID_GENESIS",
@@ -572,6 +574,7 @@ async function checkPrevId(block: Block, objectLookup: ObjectLookup): Promise<Bl
     );
   }
 
+  // Every validated block is stored as blockwithmetadata in this node.
   // here we should check if the parent block is available in our db
   // if it is not available we should request our peers for the parent block using getobject message
   try {

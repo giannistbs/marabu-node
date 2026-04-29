@@ -168,6 +168,7 @@ export class MarabuNode {
       return true;
     } catch (error) {
       if (error instanceof MissingParentBlockError) {
+        // Parent metadata without its UTXO snapshot is treated as unavailable chain state.
         this.sendErrorAndClose(socket, {
           type: "error",
           name: "UNFINDABLE_OBJECT",
