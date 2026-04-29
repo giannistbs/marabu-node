@@ -50,14 +50,14 @@ export interface IHaveObjectMessage {
 //   txids: string[];
 // }
 
-// export interface GetChainTip {
-//   type: "getchaintip";
-// }
+export interface GetChainTipMessage {
+  type: "getchaintip";
+}
 
-// export interface ChainTip {
-//   type: "chaintip";
-//   blockid: string;
-// }
+export interface ChainTip {
+  type: "chaintip";
+  blockid: string;
+}
 
 export interface Block {
   T: string;
@@ -69,6 +69,14 @@ export interface Block {
   previd: string | null;
   txids: string[];
   type: "block";
+}
+
+export interface BlockWithMetadata {
+  type: "blockwithmetadata";
+  block: Block;
+  height: number;
+  receivedAt?: number;
+  receivedFrom?: string;
 }
 
 export const GENESIS_BLOCK = {
@@ -124,7 +132,7 @@ export interface CoinbaseTransaction {
   outputs: Output[];
 }
 
-export type ApplicationObject = Transaction | CoinbaseTransaction | Block; 
+export type ApplicationObject = Transaction | CoinbaseTransaction | Block | BlockWithMetadata; 
 
 export interface ObjectMessage {
   type: "object";
@@ -140,7 +148,7 @@ export type AnyMessage =
   | GetObjectMessage
   | IHaveObjectMessage
   | ObjectMessage
+  | GetChainTipMessage
+  | ChainTip;
   // | GetMemPool
   // | Mempool
-  // | GetChainTip
-  // | ChainTip;

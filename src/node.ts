@@ -4,14 +4,17 @@ import type { NodeConfig } from "./config.js";
 import { computeObjectId } from "./protocol/hashing.js";
 import { isMissingObjectStoreError, ObjectStore } from "./store/objectStore.js";
 import { PeerStore } from "./store/peerStore.js";
-import type {
-  ApplicationObject,
-  AnyMessage,
-  ErrorMessage,
-  GetObjectMessage,
-  IHaveObjectMessage,
-  ObjectMessage,
-  UtxoSnapshot
+import {
+  type ApplicationObject,
+  type AnyMessage,
+  type ErrorMessage,
+  type GetObjectMessage,
+  type IHaveObjectMessage,
+  type ObjectMessage,
+  type UtxoSnapshot,
+  GENESIS_BLOCK,
+  GetChainTipMessage,
+  ChainTip
 } from "./types.js";
 import {
   ApplicationObjectValidationError,
@@ -109,6 +112,10 @@ export class MarabuNode {
         return true;
       case "getobject":
         return await this.handleGetObjectMessage(socket, message);
+      case "getchaintip":
+        return await this.handleGetChaintipMessage(socket, message);
+      case "chaintip":
+        return await this.handleChaintipMessage(socket, message);
       default: {
         // Reject unexpected validated variants defensively.
         this.sendErrorAndClose(socket, {
@@ -125,7 +132,10 @@ export class MarabuNode {
   private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
     const objectId = message.objectid;
     try {
-      const object = await this.objectStore.getObject(objectId);
+      let object = await this.objectStore.getObject(objectId);
+      if (object.type === "blockwithmetadata") {
+        object = object.block;
+      }
       this.sendMessage(socket, {
         type: "object",
         object
@@ -134,7 +144,6 @@ export class MarabuNode {
       if (isMissingObjectStoreError(error)) {
         return true;
       }
-
       throw error;
     }
 
@@ -147,26 +156,35 @@ export class MarabuNode {
     message: ObjectMessage
   ): Promise<boolean> {
     try {
-      await validateApplicationObjectState(message.object, {
+      const objectToSave = await validateApplicationObjectState(message.object, {
         getObject: (key: string) => this.objectStore.getObject(key),
         getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
         putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
         requestObject: (objectId: string) => this.sendGetObjectToAllPeers(objectId),
-        waitForObject: (objectId: string, timeoutMs: number) =>
-          this.waitForObject(objectId, timeoutMs)
+        waitForObject: (objectId: string, timeoutMs: number) => this.waitForObject(objectId, timeoutMs)
       });
-      const objectId = computeObjectId(message.object);
+      const objectId = computeObjectId(objectToSave);
       if (await this.objectStore.hasObject(objectId)) {
         return true;
       }
 
-      await this.objectStore.putObject(objectId, message.object);
-      this.resolveObjectWaiters(objectId, message.object);
+      await this.objectStore.putObject(objectId, objectToSave);
+      if (objectToSave.type === "blockwithmetadata") {
+        await this.updateChainTip({ type: "chaintip", blockid: objectId });
+      }
+
+      this.resolveObjectWaiters(objectId, objectToSave);
       this.sendIHaveObjectToAllPeers(objectId);
       return true;
     } catch (error) {
       if (error instanceof MissingParentBlockError) {
-        return true;
+        // Parent metadata without its UTXO snapshot is treated as unavailable chain state.
+        this.sendErrorAndClose(socket, {
+          type: "error",
+          name: "UNFINDABLE_OBJECT",
+          description: error.message
+        });
+        return false;
       }
 
       if (error instanceof ApplicationObjectValidationError) {
@@ -217,6 +235,78 @@ export class MarabuNode {
   private sendGetObjectToAllPeers(objectId: string): void {
     for (const socket of this.connections.keys()) {
       this.sendGetObjectToPeer(socket, objectId);
+    }
+  }
+
+  private async updateChainTip(chaintip: ChainTip): Promise<void> {
+    const newTipObject = await this.objectStore.getObject(chaintip.blockid);
+    if (newTipObject.type !== "blockwithmetadata") {
+      throw new Error(`Chain tip candidate ${chaintip.blockid} is not a block`);
+    }
+
+    let currentTipBlockId: string;
+    try {
+      currentTipBlockId = await this.objectStore.getChainTip();
+    } catch (error: unknown) {
+      if (isMissingObjectStoreError(error)) {
+        await this.objectStore.putChainTip(chaintip.blockid);
+        return;
+      }
+
+      throw error;
+    }
+
+    const currentTipObject = await this.objectStore.getObject(currentTipBlockId);
+    if (currentTipObject.type !== "blockwithmetadata") {
+      throw new Error(`Stored chain tip ${currentTipBlockId} is not a block`);
+    }
+
+    if (newTipObject.height > currentTipObject.height) {
+      await this.objectStore.putChainTip(chaintip.blockid);
+    }
+  }
+
+
+  // Handles a chaintip message from a peer.
+  private async handleChaintipMessage(
+    socket: net.Socket,
+    message: ChainTip
+  ): Promise<boolean> {
+    const blockid = message.blockid;
+    if (await this.objectStore.hasObject(blockid)) {
+      return true;
+    }
+
+    this.sendGetObjectToPeer(socket, blockid);
+    return true;
+  }
+
+  // Handles a getchaintip message from a peer.
+  private async handleGetChaintipMessage(
+    socket: net.Socket,
+    message: GetChainTipMessage
+  ): Promise<boolean> {
+    try {
+      const chainTip = await this.objectStore.getChainTip();
+      this.sendMessage(socket, {
+        type: "chaintip",
+        blockid: chainTip
+      });
+      return true;
+    } catch (error: unknown) {
+      if (isMissingObjectStoreError(error)) {
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  // Sends getChaintip message to all connected peers
+  private sendGetChaintipToAllPeers(): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "getchaintip"
+      });
     }
   }
 
@@ -368,6 +458,13 @@ export class MarabuNode {
     this.reconnectTimer = setInterval(() => {
       this.tryConnectDiscoveredPeers();
     }, this.config.reconnectIntervalMs);
+
+
+    // Wait briefly to allow outbound peer connections, then send getchaintip to all.
+    setTimeout(() => {
+      this.sendGetChaintipToAllPeers();
+    }, 500); // 500ms delay; adjust as needed based on network conditions
+    
   }
 
   // Stops reconnect loops, tears down sockets, and closes the listening server.

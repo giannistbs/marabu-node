@@ -1,13 +1,14 @@
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import LevelModule from "level-ts/dist/Level.js";
-import { ApplicationObject, UtxoSnapshot, GENESIS_BLOCK} from "../types.js";
+import { ApplicationObject, UtxoSnapshot, GENESIS_BLOCK, BlockWithMetadata, ChainTip} from "../types.js";
 import { computeObjectId } from "../protocol/hashing.js";
 
 const OBJECT_PREFIX = "object:";
 const UTXO_PREFIX = "utxo:";
+const CHAIN_TIP_KEY = "chaintip";
 
-type StoredValue = ApplicationObject | UtxoSnapshot;
+type StoredValue = ApplicationObject | UtxoSnapshot | ChainTip;
 
 interface LevelDatabase {
   put(key: string, value: StoredValue): Promise<void>;
@@ -86,6 +87,28 @@ export class ObjectStore {
 
 
   /*//////////////////////////////////////////////////////////////
+                           CHAINTIP METHODS
+  //////////////////////////////////////////////////////////////*/
+
+  // Persists a chain tip.
+  async putChainTip(blockid: string): Promise<void> {
+    await this.putValue(CHAIN_TIP_KEY, {
+      type: "chaintip",
+      blockid: blockid
+    } as unknown as ChainTip);
+  }
+
+  // Retrieves and type-checks the chain tip.
+  async getChainTip(): Promise<string> {
+    const value = await this.getValue(CHAIN_TIP_KEY);
+    if (!("type" in value && value.type === "chaintip" && "blockid" in value)) {
+      throw new Error(`Stored value for chain tip is not a chain tip`);
+    }
+    return value.blockid;
+  }
+
+
+  /*//////////////////////////////////////////////////////////////
                           STORE LIFECYCLE
   //////////////////////////////////////////////////////////////*/
 
@@ -116,11 +139,20 @@ export class ObjectStore {
 
   // Seeds the database with the canonical genesis block and its empty post-state UTXO set.
   private async seedGenesis(): Promise<void> {
-    const GENESIS_ID = computeObjectId(GENESIS_BLOCK)
+    const GENESIS_ID = computeObjectId(GENESIS_BLOCK);
     const hasGenesis = await this.hasObject(GENESIS_ID);
     if (!hasGenesis) {
-      await this.putObject(GENESIS_ID, GENESIS_BLOCK);
+      const genesisWithMetadata: BlockWithMetadata = {
+        type: "blockwithmetadata",
+        block: GENESIS_BLOCK,
+        height: 0
+      }
+      await this.putObject(GENESIS_ID, genesisWithMetadata);
       await this.putUtxo(GENESIS_ID, { entries: [] });
+    }
+
+    if (!await this.hasValue(CHAIN_TIP_KEY)) {
+      await this.putChainTip(GENESIS_ID);
     }
   }
   
@@ -207,7 +239,8 @@ function isApplicationObject(value: StoredValue): value is ApplicationObject {
     "type" in value &&
     (
       value.type === "transaction" ||
-      value.type === "block"
+      value.type === "block" ||
+      value.type === "blockwithmetadata"
     )
   );
 }
