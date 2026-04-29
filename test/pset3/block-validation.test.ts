@@ -4,6 +4,7 @@ import { computeObjectId } from "../../src/protocol/hashing.js";
 import type {
   ApplicationObject,
   Block,
+  BlockWithMetadata,
   ErrorName,
   Transaction,
   UtxoSnapshot
@@ -116,11 +117,21 @@ function createObjectLookup(options: {
   getUtxo: (blockId: string) => Promise<UtxoSnapshot>;
   putUtxo: (blockId: string, snapshot: UtxoSnapshot) => Promise<void>;
   requestObject: (objectId: string) => void;
+  waitForObject: (objectId: string, timeoutMs: number) => Promise<ApplicationObject>;
 } {
   const parentUtxo = options.parentUtxo ?? { entries: [] };
+  const genesisWithMetadata: BlockWithMetadata = {
+    type: "blockwithmetadata",
+    block: GENESIS_BLOCK,
+    height: 0
+  };
 
   return {
     getObject: async (key: string): Promise<ApplicationObject> => {
+      if (key === GENESIS_BLOCK_ID) {
+        return genesisWithMetadata;
+      }
+
       const object = options.objects.get(key);
       if (object !== undefined) {
         return object;
@@ -146,7 +157,15 @@ function createObjectLookup(options: {
       throw error;
     },
     putUtxo: async (): Promise<void> => {},
-    requestObject: (): void => {}
+    requestObject: (): void => {},
+    waitForObject: async (objectId: string): Promise<ApplicationObject> => {
+      const error = new Error(`missing object ${objectId}`) as Error & {
+        notFound?: boolean;
+      };
+      error.name = "NotFoundError";
+      error.notFound = true;
+      throw error;
+    }
   };
 }
 
