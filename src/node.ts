@@ -169,6 +169,10 @@ export class MarabuNode {
       }
 
       await this.objectStore.putObject(objectId, objectToSave);
+      if (objectToSave.type === "blockwithmetadata") {
+        await this.updateChainTip({ type: "chaintip", blockid: objectId });
+      }
+
       this.resolveObjectWaiters(objectId, objectToSave);
       this.sendIHaveObjectToAllPeers(objectId);
       return true;
@@ -231,6 +235,34 @@ export class MarabuNode {
   private sendGetObjectToAllPeers(objectId: string): void {
     for (const socket of this.connections.keys()) {
       this.sendGetObjectToPeer(socket, objectId);
+    }
+  }
+
+  private async updateChainTip(chaintip: ChainTip): Promise<void> {
+    const newTipObject = await this.objectStore.getObject(chaintip.blockid);
+    if (newTipObject.type !== "blockwithmetadata") {
+      throw new Error(`Chain tip candidate ${chaintip.blockid} is not a block`);
+    }
+
+    let currentTipBlockId: string;
+    try {
+      currentTipBlockId = await this.objectStore.getChainTip();
+    } catch (error: unknown) {
+      if (isMissingObjectStoreError(error)) {
+        await this.objectStore.putChainTip(chaintip.blockid);
+        return;
+      }
+
+      throw error;
+    }
+
+    const currentTipObject = await this.objectStore.getObject(currentTipBlockId);
+    if (currentTipObject.type !== "blockwithmetadata") {
+      throw new Error(`Stored chain tip ${currentTipBlockId} is not a block`);
+    }
+
+    if (newTipObject.height > currentTipObject.height) {
+      await this.objectStore.putChainTip(chaintip.blockid);
     }
   }
 
