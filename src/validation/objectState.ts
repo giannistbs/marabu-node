@@ -25,7 +25,7 @@ const REQUIRED_BLOCK_TARGET =
 const BLOCK_REWARD = 50_000_000_000_000n;
 const GENESIS_BLOCK_ID = computeObjectId(GENESIS_BLOCK);
 const MISSING_BLOCK_TX_WAIT_MS = 3_500;
-const MISSING_BLOCK_WAIT_MS = 7_500;
+const MISSING_BLOCK_WAIT_MS = 4_500;
 
 
   /*//////////////////////////////////////////////////////////////
