@@ -277,7 +277,8 @@ export class MarabuNode {
       return true;
     }
 
-    this.sendGetObjectToPeer(socket, blockid);
+    this.sendGetObjectToAllPeers(blockid);
+    
     return true;
   }
 
