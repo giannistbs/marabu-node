@@ -13,7 +13,9 @@ import type {
   Output,
   ApplicationObject,
   OutPoint,
-  Block
+  Block,
+  GetChainTipMessage,
+  ChainTip
 } from "../types.js";
 import {
   ValidationError,
@@ -53,6 +55,10 @@ export function validateWireMessage(value: unknown): AnyMessage {
       return validateErrorMessage(record);
     case "object":
       return validateObjectMessage(record);
+    case "getchaintip":
+      return validateGetChainTipMessage(record);
+    case "chaintip":
+      return validateChainTipMessage(record);
     default:
       throw new MessageValidationError("Unknown message type");
   }
@@ -337,6 +343,25 @@ function validateOutput(value: RecordValue): Output {
   };
 }
 
+
+// Validates a "getchaintip" request message.
+function validateGetChainTipMessage(value: RecordValue): GetChainTipMessage {
+  assertExactKeys(value, ["type"]);
+
+  return {
+    type: "getchaintip"
+  };
+}
+
+// Validates a "chaintip" response message.
+function validateChainTipMessage(value: RecordValue): ChainTip {
+  assertExactKeys(value, ["type", "blockid"]);
+
+  return {
+    type: "chaintip",
+    blockid: assertObjectId(value.blockid, "chaintip.blockid")
+  };
+}
 
     /*//////////////////////////////////////////////////////////////
                             SPECIFIC HELPERS
