@@ -232,13 +232,33 @@ function validateTransactionMessage(value: RecordValue): Transaction {
     );
   }
 
+  // Parse and validate each input object. This ensures every input in the array is a JSON object
+  // and properly shaped per the Input schema.
+  const inputs = value.inputs.map((input, index) =>
+    validateInput(
+      assertRecord(input, `transaction.inputs[${index}] must be a JSON object`)
+    )
+  );
+
+  // Check for duplicate outpoints within the transaction inputs,
+  // which is a protocol-level stateless violation.
+  const seen = new Set<string>();
+  for (const input of inputs) {
+    // Form a unique key for each outpoint using its txid and index.
+    const key = `${input.outpoint.txid}:${input.outpoint.index}`;
+    if (seen.has(key)) {
+      // If the same outpoint is referenced more than once in the inputs, reject the message.
+      throw new MessageValidationError(
+        `transaction.inputs contains duplicate outpoint ${key}`
+      );
+    }
+    seen.add(key);
+  }
+
+  // Construct and return the normalized Transaction
   return {
     type: "transaction",
-    inputs: value.inputs.map((input, index) =>
-      validateInput(
-        assertRecord(input, `transaction.inputs[${index}] must be a JSON object`)
-      )
-    ),
+    inputs,
     outputs: value.outputs.map((output, index) =>
       validateOutput(
         assertRecord(output, `transaction.outputs[${index}] must be a JSON object`)
