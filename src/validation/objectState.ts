@@ -281,7 +281,10 @@ async function validateTransactionState(
   validateOutputs(transaction.outputs);
 
   // Step 2
-  const referencedOutputs = await resolveOutpoints(transaction, objectLookup);
+  const referencedOutputs = resolveOutpointsFromUtxo(
+    transaction,
+    objectLookup.getMempoolUtxo()
+  );
 
   // Step 3
   await validateTransactionInputSignatures(
@@ -294,56 +297,6 @@ async function validateTransactionState(
   validateTransactionConservation(transaction, referencedOutputs);
 }
 
-
-// Resolves each input's outpoint to the referenced output, performing existence and type checks.
-async function resolveOutpoints(
-  transaction: Transaction,
-  objectLookup: ObjectLookup
-): Promise<Output[]> {
-  const referencedOutputs: Output[] = [];
-
-  for (let index = 0; index < transaction.inputs.length; index += 1) {
-    const input = transaction.inputs[index];
-    if (input === undefined) {
-      throw new ApplicationObjectValidationError(
-        "INTERNAL_ERROR",
-        `Missing transaction input at index ${index}`
-      );
-    }
-
-    let referencedObject: ApplicationObject;
-    try {
-      referencedObject = await objectLookup.getObject(input.outpoint.txid);
-    } catch (error: unknown) {
-      if (!isMissingReferencedObjectError(error)) {
-        throw error;
-      }
-      throw new ApplicationObjectValidationError(
-        "UNKNOWN_OBJECT",
-        `Referenced transaction ${input.outpoint.txid} is unknown`
-      );
-    }
-
-    if (referencedObject.type !== "transaction") {
-      throw new ApplicationObjectValidationError(
-        "INVALID_TX_OUTPOINT",
-        `Referenced object ${input.outpoint.txid} is not a transaction`
-      );
-    }
-
-    const referencedOutput = referencedObject.outputs[input.outpoint.index];
-    if (referencedOutput === undefined) {
-      throw new ApplicationObjectValidationError(
-        "INVALID_TX_OUTPOINT",
-        `Referenced output ${input.outpoint.txid}:${input.outpoint.index} is out of range`
-      );
-    }
-
-    referencedOutputs.push(referencedOutput);
-  }
-
-  return referencedOutputs;
-}
 
 // Validates that each output has a valid Ed25519 pubkey and a non-negative integer value.
 function validateOutputs(outputs: unknown): void {
@@ -874,6 +827,7 @@ ed.hashes.sha512 = sha512;
 interface ObjectLookup {
   getObject(key: string): Promise<ApplicationObject>;
   getUtxo(blockId: string): Promise<UtxoSnapshot>;
+  getMempoolUtxo(): Map<string, UtxoEntry>;
   putUtxo(blockId: string, snapshot: UtxoSnapshot): Promise<void>;
   requestObject(objectId: string): void;
   waitForObject(objectId: string, timeoutMs: number): Promise<ApplicationObject>;
