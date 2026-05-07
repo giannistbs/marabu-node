@@ -3,18 +3,22 @@ import { encodeMessage, decodeLine } from "./protocol/codec.js";
 import type { NodeConfig } from "./config.js";
 import { computeObjectId } from "./protocol/hashing.js";
 import { isMissingObjectStoreError, ObjectStore } from "./store/objectStore.js";
+import { Mempool as TransactionMempool } from "./store/mempool.js";
 import { PeerStore } from "./store/peerStore.js";
 import {
   type ApplicationObject,
   type AnyMessage,
+  type BlockWithMetadata,
   type ErrorMessage,
   type GetObjectMessage,
   type IHaveObjectMessage,
+  type GetMemPool,
+  type Mempool as MempoolMessage,
   type ObjectMessage,
+  type Transaction,
   type UtxoSnapshot,
-  GENESIS_BLOCK,
-  GetChainTipMessage,
-  ChainTip
+  type GetChainTipMessage,
+  type ChainTip
 } from "./types.js";
 import {
   ApplicationObjectValidationError,
@@ -37,15 +41,63 @@ interface ConnectionState {
 interface ObjectWaiter {
   resolve: (object: ApplicationObject) => void;
   reject: (error: Error) => void;
+  timeout: NodeJS.Timeout | null;
+}
+
+// Compares two chain tips and returns txids removed from the old fork and added on the new fork.
+async function collectForkDiff(
+  oldTipId: string,
+  newTipId: string,
+  store: ObjectStore
+): Promise<{ orphaned: string[]; confirmed: string[] }> {
+  // Loads one block object and rejects corrupted or mistyped store entries.
+  const getBlock = async (blockId: string): Promise<BlockWithMetadata> => {
+    const object = await store.getObject(blockId);
+    if (object.type !== "blockwithmetadata") {
+      throw new Error(`Object ${blockId} is not a block`);
+    }
+    return object;
+  };
+
+  let oldCursor = await getBlock(oldTipId);
+  let newCursor = await getBlock(newTipId);
+  const oldBlocks: BlockWithMetadata[] = [];
+  const newBlocks: BlockWithMetadata[] = [];
+
+  // First move the taller chain back until both cursors are at the same height.
+  while (oldCursor.height > newCursor.height) {
+    oldBlocks.push(oldCursor);
+    oldCursor = await getBlock(oldCursor.block.previd!);
+  }
+
+  while (newCursor.height > oldCursor.height) {
+    newBlocks.push(newCursor);
+    newCursor = await getBlock(newCursor.block.previd!);
+  }
+
+  // Then walk both chains together; collected old blocks are orphaned, new blocks are confirmed.
+  while (computeObjectId(oldCursor) !== computeObjectId(newCursor)) {
+    oldBlocks.push(oldCursor);
+    newBlocks.push(newCursor);
+    oldCursor = await getBlock(oldCursor.block.previd!);
+    newCursor = await getBlock(newCursor.block.previd!);
+  }
+
+  return {
+    orphaned: oldBlocks.flatMap((block) => block.block.txids),
+    confirmed: newBlocks.flatMap((block) => block.block.txids)
+  };
 }
 
 export class MarabuNode {
   private readonly server: net.Server;
   private readonly connections = new Map<net.Socket, ConnectionState>();
   private readonly pendingObjectWaiters = new Map<string, Set<ObjectWaiter>>();
+  private readonly inFlightObjectValidations = new Map<string, Promise<ApplicationObject>>();
   private readonly outboundSocketsByPeer = new Map<string, net.Socket>();
   private readonly dialingPeers = new Set<string>();
   private readonly failedAttemptsByPeer = new Map<string, number>();
+  private readonly mempool = new TransactionMempool();
   private readonly maxFailedAttempts = 3;
 
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -116,6 +168,12 @@ export class MarabuNode {
         return await this.handleGetChaintipMessage(socket, message);
       case "chaintip":
         return await this.handleChaintipMessage(socket, message);
+      case "getmempool":
+        this.handleGetMempoolMessage(socket, message);
+        return true;
+      case "mempool":
+        await this.handleMempoolMessage(message);
+        return true;
       default: {
         // Reject unexpected validated variants defensively.
         this.sendErrorAndClose(socket, {
@@ -155,26 +213,36 @@ export class MarabuNode {
     socket: net.Socket,
     message: ObjectMessage
   ): Promise<boolean> {
+    const incomingObjectId = computeObjectId(message.object);
+
     try {
-      const objectToSave = await validateApplicationObjectState(message.object, {
-        getObject: (key: string) => this.objectStore.getObject(key),
-        getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
-        putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
-        requestObject: (objectId: string) => this.sendGetObjectToAllPeers(objectId),
-        waitForObject: (objectId: string, timeoutMs: number) => this.waitForObject(objectId, timeoutMs)
-      });
-      const objectId = computeObjectId(objectToSave);
-      if (await this.objectStore.hasObject(objectId)) {
+      if (await this.objectStore.hasObject(incomingObjectId)) {
         return true;
       }
 
-      await this.objectStore.putObject(objectId, objectToSave);
-      if (objectToSave.type === "blockwithmetadata") {
-        await this.updateChainTip({ type: "chaintip", blockid: objectId });
+      const inFlightValidation = this.inFlightObjectValidations.get(incomingObjectId);
+      if (inFlightValidation !== undefined) {
+        await inFlightValidation;
+        return true;
       }
 
-      this.resolveObjectWaiters(objectId, objectToSave);
-      this.sendIHaveObjectToAllPeers(objectId);
+      this.markObjectArrived(incomingObjectId);
+
+      const validation = this.validateAndStoreObject(incomingObjectId, message.object)
+        .catch((error: unknown) => {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          this.rejectObjectWaiters(
+            incomingObjectId,
+            this.createObjectDependencyError(incomingObjectId, failure)
+          );
+          throw failure;
+        })
+        .finally(() => {
+          this.inFlightObjectValidations.delete(incomingObjectId);
+        });
+
+      this.inFlightObjectValidations.set(incomingObjectId, validation);
+      await validation;
       return true;
     } catch (error) {
       if (error instanceof MissingParentBlockError) {
@@ -198,6 +266,51 @@ export class MarabuNode {
 
       throw error;
     }
+  }
+
+  // Validates incoming objects, stores accepted ones, and applies chain/mempool side effects.
+  private async validateAndStoreObject(
+    objectId: string,
+    object: ApplicationObject
+  ): Promise<ApplicationObject> {
+    const objectToSave = await validateApplicationObjectState(object, {
+      getObject: (key: string) => this.objectStore.getObject(key),
+      getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
+      putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
+      requestObject: (requestedObjectId: string) => this.sendGetObjectToAllPeers(requestedObjectId),
+      waitForObject: (requestedObjectId: string, timeoutMs: number) => this.waitForObject(requestedObjectId, timeoutMs)
+    });
+
+    if (await this.objectStore.hasObject(objectId)) {
+      const storedObject = await this.objectStore.getObject(objectId);
+      this.resolveObjectWaiters(objectId, storedObject);
+      return storedObject;
+    }
+
+    await this.objectStore.putObject(objectId, objectToSave);
+    if (objectToSave.type === "transaction" && !("height" in objectToSave)) {
+      // Store valid transaction objects even when they do not fit the active-chain mempool.
+      if (!this.mempool.tryAddTransaction(objectId, objectToSave)) {
+        this.resolveObjectWaiters(objectId, objectToSave);
+        throw new ApplicationObjectValidationError(
+          "INVALID_TX_OUTPOINT",
+          `Transaction ${objectId} cannot be applied to the active mempool`
+        );
+      }
+    }
+
+    if (objectToSave.type === "blockwithmetadata") {
+      // Keep the previous tip so a real tip change can remove confirmed txs and restore reorg orphans.
+      const previousTipId = await this.objectStore.getChainTip();
+      const tipChanged = await this.updateChainTip({ type: "chaintip", blockid: objectId });
+      if (tipChanged) {
+        await this.rebuildMempoolAfterBlock(objectToSave, previousTipId);
+      }
+    }
+
+    this.resolveObjectWaiters(objectId, objectToSave);
+    this.sendIHaveObjectToAllPeers(objectId);
+    return objectToSave;
   }
 
   // Handles an ihaveobject message from a peer.
@@ -238,7 +351,9 @@ export class MarabuNode {
     }
   }
 
-  private async updateChainTip(chaintip: ChainTip): Promise<void> {
+  // Updates the stored chain tip if the candidate block is strictly better.
+  private async updateChainTip(chaintip: ChainTip): Promise<boolean> {
+    // Fetch the candidate block - must be a valid blockwithmetadata object.
     const newTipObject = await this.objectStore.getObject(chaintip.blockid);
     if (newTipObject.type !== "blockwithmetadata") {
       throw new Error(`Chain tip candidate ${chaintip.blockid} is not a block`);
@@ -246,23 +361,98 @@ export class MarabuNode {
 
     let currentTipBlockId: string;
     try {
+      // Try to retrieve the current chain tip's block id from the object store.
       currentTipBlockId = await this.objectStore.getChainTip();
     } catch (error: unknown) {
+      // If there is no chain tip stored yet accept the candidate as the new tip.
       if (isMissingObjectStoreError(error)) {
         await this.objectStore.putChainTip(chaintip.blockid);
-        return;
+        return true;
       }
-
+      // Other errors should propagate.
       throw error;
     }
 
+    // Fetch the current tip block object for comparison.
     const currentTipObject = await this.objectStore.getObject(currentTipBlockId);
     if (currentTipObject.type !== "blockwithmetadata") {
+      // Corrupted store: chain tip does not refer to a block.
       throw new Error(`Stored chain tip ${currentTipBlockId} is not a block`);
     }
 
+    // If the candidate's height is higher, update the tip.
     if (newTipObject.height > currentTipObject.height) {
       await this.objectStore.putChainTip(chaintip.blockid);
+      return true;
+    }
+
+    // Otherwise, keep the current tip.
+    return false;
+  }
+
+
+  // Rebuilds the in-memory mempool after a new active-chain block is accepted.
+  private async rebuildMempoolAfterBlock(
+    newBlock: BlockWithMetadata,
+    previousTipId: string
+  ): Promise<void> {
+    const newBlockId = computeObjectId(newBlock);
+
+    const confirmedTxids = new Set(newBlock.block.txids);
+    const orphanedTxids: string[] = [];
+
+    if (newBlock.block.previd !== previousTipId) {
+      // Reorg case: old-chain txs may become mempool candidates again.
+      const forkDiff = await collectForkDiff(previousTipId, newBlockId, this.objectStore);
+      for (const txid of forkDiff.confirmed) {
+        confirmedTxids.add(txid);
+      }
+      orphanedTxids.push(...forkDiff.orphaned);
+    }
+
+    const survivingTxids = this.mempool
+      .getTxids()
+      .filter((txid) => !confirmedTxids.has(txid));
+    const candidateTxids = [
+      ...survivingTxids,
+      ...orphanedTxids.filter((txid) => !confirmedTxids.has(txid))
+    ];
+    const candidates: { txid: string; transaction: Transaction }[] = [];
+
+    // Reload candidates from storage so rebuild only replays transaction objects we still have.
+    for (const txid of candidateTxids) {
+      try {
+        const object = await this.objectStore.getObject(txid);
+        if (object.type === "transaction" && !("height" in object)) {
+          candidates.push({ txid, transaction: object });
+        }
+      } catch (error: unknown) {
+        if (!isMissingObjectStoreError(error)) {
+          throw error;
+        }
+      }
+    }
+
+    const newUtxo = await this.objectStore.getUtxo(newBlockId);
+    // Reset to confirmed chain state, then replay surviving/orphaned transactions that still fit.
+    this.mempool.rebuild(newUtxo, candidates);
+  }
+
+
+  // Handles a getmempool message from a peer.
+  private handleGetMempoolMessage(socket: net.Socket, _message: GetMemPool): void {
+    this.sendMessage(socket, {
+      type: "mempool",
+      txids: this.mempool.getTxids()
+    });
+  }
+
+  // Requests mempool transactions that this node has not seen yet.
+  private async handleMempoolMessage(message: MempoolMessage): Promise<void> {
+    for (const txid of message.txids) {
+      if (!await this.objectStore.hasObject(txid)) {
+        this.sendGetObjectToAllPeers(txid);
+      }
     }
   }
 
@@ -311,6 +501,15 @@ export class MarabuNode {
     }
   }
 
+  // Sends a getmempool request to all connected peers.
+  private sendGetMempoolToAllPeers(): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "getmempool"
+      });
+    }
+  }
+
   // Sends a getobject request to a connected peer.
   private sendGetObjectToPeer(socket: net.Socket, objectId: string): void {
     this.sendMessage(socket, {
@@ -350,13 +549,20 @@ export class MarabuNode {
       }, timeoutMs);
 
       const waiter: ObjectWaiter = {
+        timeout,
         resolve: (object) => {
-          clearTimeout(timeout);
+          if (waiter.timeout !== null) {
+            clearTimeout(waiter.timeout);
+            waiter.timeout = null;
+          }
           removeWaiter();
           resolve(object);
         },
         reject: (error) => {
-          clearTimeout(timeout);
+          if (waiter.timeout !== null) {
+            clearTimeout(waiter.timeout);
+            waiter.timeout = null;
+          }
           removeWaiter();
           reject(error);
         }
@@ -364,6 +570,10 @@ export class MarabuNode {
 
       waiters.add(waiter);
       this.pendingObjectWaiters.set(objectId, waiters);
+
+      if (this.inFlightObjectValidations.has(objectId)) {
+        this.markObjectArrived(objectId);
+      }
 
       // Re-check after registering the waiter so we do not miss a just-arrived object.
       void this.objectStore
@@ -380,6 +590,21 @@ export class MarabuNode {
           this.rejectObjectWaiters(objectId, failure);
         });
     });
+  }
+
+  // Clears arrival timers after the exact requested object is being validated.
+  private markObjectArrived(objectId: string): void {
+    const waiters = this.pendingObjectWaiters.get(objectId);
+    if (waiters === undefined) {
+      return;
+    }
+
+    for (const waiter of waiters) {
+      if (waiter.timeout !== null) {
+        clearTimeout(waiter.timeout);
+        waiter.timeout = null;
+      }
+    }
   }
 
   // Resolves all waiters that were blocked on the given object ID.
@@ -406,6 +631,14 @@ export class MarabuNode {
     for (const waiter of waiters) {
       waiter.reject(error);
     }
+  }
+
+  // Wraps a validation failure so dependent block waits can map it to UNFINDABLE_OBJECT.
+  private createObjectDependencyError(objectId: string, cause: Error): Error {
+    const error = new Error(`Object ${objectId} failed validation while resolving a dependency`);
+    error.name = "ObjectDependencyValidationError";
+    error.cause = cause;
+    return error;
   }
 
   // Rejects every outstanding object wait when the node is shutting down.
@@ -451,6 +684,11 @@ export class MarabuNode {
       this.server.listen(this.config.port, this.config.host);
     });
 
+    const tipId = await this.objectStore.getChainTip();
+    const tipUtxo = await this.objectStore.getUtxo(tipId);
+    // The mempool is intentionally in-memory, so rebuild its base view on every boot.
+    this.mempool.initialize(tipUtxo);
+
     this.running = true;
     // Attempt immediate outbound dials instead of waiting for the first interval tick.
     this.tryConnectDiscoveredPeers();
@@ -461,9 +699,10 @@ export class MarabuNode {
     }, this.config.reconnectIntervalMs);
 
 
-    // Wait briefly to allow outbound peer connections, then send getchaintip to all.
+    // Wait briefly to allow outbound peer connections, then ask for chain and mempool state.
     setTimeout(() => {
       this.sendGetChaintipToAllPeers();
+      this.sendGetMempoolToAllPeers();
     }, 500); // 500ms delay; adjust as needed based on network conditions
     
   }

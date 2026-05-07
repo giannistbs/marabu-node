@@ -15,7 +15,9 @@ import type {
   OutPoint,
   Block,
   GetChainTipMessage,
-  ChainTip
+  ChainTip,
+  GetMemPool,
+  Mempool
 } from "../types.js";
 import {
   ValidationError,
@@ -59,6 +61,10 @@ export function validateWireMessage(value: unknown): AnyMessage {
       return validateGetChainTipMessage(record);
     case "chaintip":
       return validateChainTipMessage(record);
+    case "getmempool":
+      return validateGetMempoolMessage(record);
+    case "mempool":
+      return validateMempoolMessage(record);
     default:
       throw new MessageValidationError("Unknown message type");
   }
@@ -232,13 +238,33 @@ function validateTransactionMessage(value: RecordValue): Transaction {
     );
   }
 
+  // Parse and validate each input object. This ensures every input in the array is a JSON object
+  // and properly shaped per the Input schema.
+  const inputs = value.inputs.map((input, index) =>
+    validateInput(
+      assertRecord(input, `transaction.inputs[${index}] must be a JSON object`)
+    )
+  );
+
+  // Check for duplicate outpoints within the transaction inputs,
+  // which is a protocol-level stateless violation.
+  const seen = new Set<string>();
+  for (const input of inputs) {
+    // Form a unique key for each outpoint using its txid and index.
+    const key = `${input.outpoint.txid}:${input.outpoint.index}`;
+    if (seen.has(key)) {
+      // If the same outpoint is referenced more than once in the inputs, reject the message.
+      throw new MessageValidationError(
+        `transaction.inputs contains duplicate outpoint ${key}`
+      );
+    }
+    seen.add(key);
+  }
+
+  // Construct and return the normalized Transaction
   return {
     type: "transaction",
-    inputs: value.inputs.map((input, index) =>
-      validateInput(
-        assertRecord(input, `transaction.inputs[${index}] must be a JSON object`)
-      )
-    ),
+    inputs,
     outputs: value.outputs.map((output, index) =>
       validateOutput(
         assertRecord(output, `transaction.outputs[${index}] must be a JSON object`)
@@ -360,6 +386,31 @@ function validateChainTipMessage(value: RecordValue): ChainTip {
   return {
     type: "chaintip",
     blockid: assertObjectId(value.blockid, "chaintip.blockid")
+  };
+}
+
+// Validates a "getmempool" request message.
+function validateGetMempoolMessage(value: RecordValue): GetMemPool {
+  assertExactKeys(value, ["type"]);
+
+  return {
+    type: "getmempool"
+  };
+}
+
+// Validates a "mempool" response message.
+function validateMempoolMessage(value: RecordValue): Mempool {
+  assertExactKeys(value, ["type", "txids"]);
+
+  if (!Array.isArray(value.txids)) {
+    throw new MessageValidationError("mempool.txids must be an array");
+  }
+
+  return {
+    type: "mempool",
+    txids: value.txids.map((txid, index) =>
+      assertObjectId(txid, `mempool.txids[${index}]`)
+    )
   };
 }
 

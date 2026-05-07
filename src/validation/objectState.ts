@@ -18,7 +18,6 @@ import {
   isValidEd25519PublicKey
 } from "./utils.js";
 import { computeObjectId } from "../protocol/hashing.js";
-import { error } from "node:console";
 
 const REQUIRED_BLOCK_TARGET =
   "00000000abc00000000000000000000000000000000000000000000000000000";
@@ -295,7 +294,6 @@ async function validateTransactionState(
   validateTransactionConservation(transaction, referencedOutputs);
 }
 
-
 // Resolves each input's outpoint to the referenced output, performing existence and type checks.
 async function resolveOutpoints(
   transaction: Transaction,
@@ -345,6 +343,7 @@ async function resolveOutpoints(
 
   return referencedOutputs;
 }
+
 
 // Validates that each output has a valid Ed25519 pubkey and a non-negative integer value.
 function validateOutputs(outputs: unknown): void {
@@ -479,6 +478,11 @@ function isObjectWaitTimeoutError(error: unknown): boolean {
   return error instanceof Error && error.name === "ObjectWaitTimeoutError";
 }
 
+// Returns true when a matching object arrived but failed validation before storage.
+function isObjectDependencyValidationError(error: unknown): boolean {
+  return error instanceof Error && error.name === "ObjectDependencyValidationError";
+}
+
 // Loads a block transaction immediately or waits for it to arrive after requesting it.
 async function findBlockTransactionObject(
   txid: string,
@@ -499,7 +503,8 @@ async function findBlockTransactionObject(
   } catch (error: unknown) {
     if (
       !isMissingReferencedObjectError(error) &&
-      !isObjectWaitTimeoutError(error)
+      !isObjectWaitTimeoutError(error) &&
+      !isObjectDependencyValidationError(error)
     ) {
       throw error;
     }
@@ -607,7 +612,8 @@ async function checkPrevId(block: Block, objectLookup: ObjectLookup): Promise<Bl
   } catch (error: unknown) {
     if (
       !isMissingReferencedObjectError(error) &&
-      !isObjectWaitTimeoutError(error)
+      !isObjectWaitTimeoutError(error) &&
+      !isObjectDependencyValidationError(error)
     ) {
       throw error;
     }

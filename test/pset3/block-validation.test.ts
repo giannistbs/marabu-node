@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { computeObjectId } from "../../src/protocol/hashing.js";
 import type {
   ApplicationObject,
@@ -51,6 +52,13 @@ const ASSIGNMENT_BLOCK: Block = {
 };
 
 const ASSIGNMENT_BLOCK_ID = computeObjectId(ASSIGNMENT_BLOCK);
+
+interface NodeWaiterInternals {
+  waitForObject: (objectId: string, timeoutMs: number) => Promise<ApplicationObject>;
+  markObjectArrived: (objectId: string) => void;
+  resolveObjectWaiters: (objectId: string, object: ApplicationObject) => void;
+  inFlightObjectValidations: Map<string, Promise<ApplicationObject>>;
+}
 
 // Checks that a response set contains no protocol error.
 function assertNoError(
@@ -310,6 +318,75 @@ test("PSET3: valid block is accepted and gossiped with ihaveobject", async () =>
       peer.socket.end();
     }
   });
+});
+
+test("PSET3: object waiter timeout pauses after matching object arrives for validation", async () => {
+  await withTestNode(async ({ node }) => {
+    const internals = node as unknown as NodeWaiterInternals;
+    const objectId = computeObjectId(ASSIGNMENT_TX);
+    let settled = false;
+
+    const wait = internals.waitForObject(objectId, 50).finally(() => {
+      settled = true;
+    });
+
+    await delay(10);
+    internals.markObjectArrived(objectId);
+    await delay(100);
+    assert.equal(settled, false, "waiter should not time out after object arrival");
+
+    internals.resolveObjectWaiters(objectId, ASSIGNMENT_TX);
+    assert.deepEqual(await wait, ASSIGNMENT_TX);
+  });
+});
+
+test("PSET3: waiter registered during in-flight validation does not start its timeout", async () => {
+  await withTestNode(async ({ node }) => {
+    const internals = node as unknown as NodeWaiterInternals;
+    const objectId = computeObjectId(ASSIGNMENT_TX);
+    let settled = false;
+    let resolveValidation!: (object: ApplicationObject) => void;
+    const validation = new Promise<ApplicationObject>((resolve) => {
+      resolveValidation = resolve;
+    });
+
+    internals.inFlightObjectValidations.set(objectId, validation);
+    try {
+      const wait = internals.waitForObject(objectId, 50).finally(() => {
+        settled = true;
+      });
+
+      await delay(100);
+      assert.equal(settled, false, "waiter should remain pending while validation is in flight");
+
+      resolveValidation(ASSIGNMENT_TX);
+      internals.resolveObjectWaiters(objectId, ASSIGNMENT_TX);
+      assert.deepEqual(await wait, ASSIGNMENT_TX);
+    } finally {
+      internals.inFlightObjectValidations.delete(objectId);
+    }
+  });
+});
+
+test("PSET3: dependency validation failure maps to UNFINDABLE_OBJECT", async () => {
+  const dependencyError = new Error("dependency failed validation");
+  dependencyError.name = "ObjectDependencyValidationError";
+
+  const objectLookup = createObjectLookup({
+    objects: new Map()
+  });
+
+  await assertValidationError(
+    ASSIGNMENT_BLOCK,
+    "UNFINDABLE_OBJECT",
+    {
+      ...objectLookup,
+      waitForObject: async () => {
+        throw dependencyError;
+      }
+    },
+    "dependency validation failure"
+  );
 });
 
 test("PSET3: block transaction that spends outside the parent UTXO set returns INVALID_TX_OUTPOINT", async () => {
