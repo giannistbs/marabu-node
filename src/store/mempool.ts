@@ -44,5 +44,35 @@ export class Mempool {
     }
   }
 
+  rebuild(
+    snapshot: UtxoSnapshot,
+    candidates: { txid: string; transaction: Transaction }[]
+  ): void {
+    this.initialize(snapshot);
 
+    const remaining = [...candidates];
+    let appliedAny = true;
+
+    while (appliedAny) {
+      appliedAny = false;
+
+      for (let index = 0; index < remaining.length; index += 1) {
+        const candidate = remaining[index];
+        if (candidate === undefined || !this.canApply(candidate.transaction)) {
+          continue;
+        }
+
+        this.addTransaction(candidate.txid, candidate.transaction);
+        remaining.splice(index, 1);
+        index -= 1;
+        appliedAny = true;
+      }
+    }
+  }
+
+  private canApply(transaction: Transaction): boolean {
+    return transaction.inputs.every((input) =>
+      this.utxoMap.has(utxoKey(input.outpoint.txid, input.outpoint.index))
+    );
+  }
 }
