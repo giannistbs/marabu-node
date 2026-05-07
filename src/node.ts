@@ -37,12 +37,14 @@ interface ConnectionState {
 interface ObjectWaiter {
   resolve: (object: ApplicationObject) => void;
   reject: (error: Error) => void;
+  timeout: NodeJS.Timeout | null;
 }
 
 export class MarabuNode {
   private readonly server: net.Server;
   private readonly connections = new Map<net.Socket, ConnectionState>();
   private readonly pendingObjectWaiters = new Map<string, Set<ObjectWaiter>>();
+  private readonly inFlightObjectValidations = new Map<string, Promise<ApplicationObject>>();
   private readonly outboundSocketsByPeer = new Map<string, net.Socket>();
   private readonly dialingPeers = new Set<string>();
   private readonly failedAttemptsByPeer = new Map<string, number>();
@@ -155,26 +157,36 @@ export class MarabuNode {
     socket: net.Socket,
     message: ObjectMessage
   ): Promise<boolean> {
+    const incomingObjectId = computeObjectId(message.object);
+
     try {
-      const objectToSave = await validateApplicationObjectState(message.object, {
-        getObject: (key: string) => this.objectStore.getObject(key),
-        getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
-        putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
-        requestObject: (objectId: string) => this.sendGetObjectToAllPeers(objectId),
-        waitForObject: (objectId: string, timeoutMs: number) => this.waitForObject(objectId, timeoutMs)
-      });
-      const objectId = computeObjectId(objectToSave);
-      if (await this.objectStore.hasObject(objectId)) {
+      if (await this.objectStore.hasObject(incomingObjectId)) {
         return true;
       }
 
-      await this.objectStore.putObject(objectId, objectToSave);
-      if (objectToSave.type === "blockwithmetadata") {
-        await this.updateChainTip({ type: "chaintip", blockid: objectId });
+      const inFlightValidation = this.inFlightObjectValidations.get(incomingObjectId);
+      if (inFlightValidation !== undefined) {
+        await inFlightValidation;
+        return true;
       }
 
-      this.resolveObjectWaiters(objectId, objectToSave);
-      this.sendIHaveObjectToAllPeers(objectId);
+      this.markObjectArrived(incomingObjectId);
+
+      const validation = this.validateAndStoreObject(incomingObjectId, message.object)
+        .catch((error: unknown) => {
+          const failure = error instanceof Error ? error : new Error(String(error));
+          this.rejectObjectWaiters(
+            incomingObjectId,
+            this.createObjectDependencyError(incomingObjectId, failure)
+          );
+          throw failure;
+        })
+        .finally(() => {
+          this.inFlightObjectValidations.delete(incomingObjectId);
+        });
+
+      this.inFlightObjectValidations.set(incomingObjectId, validation);
+      await validation;
       return true;
     } catch (error) {
       if (error instanceof MissingParentBlockError) {
@@ -198,6 +210,34 @@ export class MarabuNode {
 
       throw error;
     }
+  }
+
+  private async validateAndStoreObject(
+    objectId: string,
+    object: ApplicationObject
+  ): Promise<ApplicationObject> {
+    const objectToSave = await validateApplicationObjectState(object, {
+      getObject: (key: string) => this.objectStore.getObject(key),
+      getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
+      putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
+      requestObject: (requestedObjectId: string) => this.sendGetObjectToAllPeers(requestedObjectId),
+      waitForObject: (requestedObjectId: string, timeoutMs: number) => this.waitForObject(requestedObjectId, timeoutMs)
+    });
+
+    if (await this.objectStore.hasObject(objectId)) {
+      const storedObject = await this.objectStore.getObject(objectId);
+      this.resolveObjectWaiters(objectId, storedObject);
+      return storedObject;
+    }
+
+    await this.objectStore.putObject(objectId, objectToSave);
+    if (objectToSave.type === "blockwithmetadata") {
+      await this.updateChainTip({ type: "chaintip", blockid: objectId });
+    }
+
+    this.resolveObjectWaiters(objectId, objectToSave);
+    this.sendIHaveObjectToAllPeers(objectId);
+    return objectToSave;
   }
 
   // Handles an ihaveobject message from a peer.
@@ -350,13 +390,20 @@ export class MarabuNode {
       }, timeoutMs);
 
       const waiter: ObjectWaiter = {
+        timeout,
         resolve: (object) => {
-          clearTimeout(timeout);
+          if (waiter.timeout !== null) {
+            clearTimeout(waiter.timeout);
+            waiter.timeout = null;
+          }
           removeWaiter();
           resolve(object);
         },
         reject: (error) => {
-          clearTimeout(timeout);
+          if (waiter.timeout !== null) {
+            clearTimeout(waiter.timeout);
+            waiter.timeout = null;
+          }
           removeWaiter();
           reject(error);
         }
@@ -364,6 +411,10 @@ export class MarabuNode {
 
       waiters.add(waiter);
       this.pendingObjectWaiters.set(objectId, waiters);
+
+      if (this.inFlightObjectValidations.has(objectId)) {
+        this.markObjectArrived(objectId);
+      }
 
       // Re-check after registering the waiter so we do not miss a just-arrived object.
       void this.objectStore
@@ -380,6 +431,21 @@ export class MarabuNode {
           this.rejectObjectWaiters(objectId, failure);
         });
     });
+  }
+
+  // Clears arrival timers after the exact requested object is being validated.
+  private markObjectArrived(objectId: string): void {
+    const waiters = this.pendingObjectWaiters.get(objectId);
+    if (waiters === undefined) {
+      return;
+    }
+
+    for (const waiter of waiters) {
+      if (waiter.timeout !== null) {
+        clearTimeout(waiter.timeout);
+        waiter.timeout = null;
+      }
+    }
   }
 
   // Resolves all waiters that were blocked on the given object ID.
@@ -406,6 +472,13 @@ export class MarabuNode {
     for (const waiter of waiters) {
       waiter.reject(error);
     }
+  }
+
+  private createObjectDependencyError(objectId: string, cause: Error): Error {
+    const error = new Error(`Object ${objectId} failed validation while resolving a dependency`);
+    error.name = "ObjectDependencyValidationError";
+    error.cause = cause;
+    return error;
   }
 
   // Rejects every outstanding object wait when the node is shutting down.

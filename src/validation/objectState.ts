@@ -18,7 +18,6 @@ import {
   isValidEd25519PublicKey
 } from "./utils.js";
 import { computeObjectId } from "../protocol/hashing.js";
-import { error } from "node:console";
 
 const REQUIRED_BLOCK_TARGET =
   "00000000abc00000000000000000000000000000000000000000000000000000";
@@ -479,6 +478,11 @@ function isObjectWaitTimeoutError(error: unknown): boolean {
   return error instanceof Error && error.name === "ObjectWaitTimeoutError";
 }
 
+// Returns true when a matching object arrived but failed validation before storage.
+function isObjectDependencyValidationError(error: unknown): boolean {
+  return error instanceof Error && error.name === "ObjectDependencyValidationError";
+}
+
 // Loads a block transaction immediately or waits for it to arrive after requesting it.
 async function findBlockTransactionObject(
   txid: string,
@@ -499,7 +503,8 @@ async function findBlockTransactionObject(
   } catch (error: unknown) {
     if (
       !isMissingReferencedObjectError(error) &&
-      !isObjectWaitTimeoutError(error)
+      !isObjectWaitTimeoutError(error) &&
+      !isObjectDependencyValidationError(error)
     ) {
       throw error;
     }
@@ -607,7 +612,8 @@ async function checkPrevId(block: Block, objectLookup: ObjectLookup): Promise<Bl
   } catch (error: unknown) {
     if (
       !isMissingReferencedObjectError(error) &&
-      !isObjectWaitTimeoutError(error)
+      !isObjectWaitTimeoutError(error) &&
+      !isObjectDependencyValidationError(error)
     ) {
       throw error;
     }
