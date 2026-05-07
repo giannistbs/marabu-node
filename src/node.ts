@@ -276,8 +276,6 @@ export class MarabuNode {
     const objectToSave = await validateApplicationObjectState(object, {
       getObject: (key: string) => this.objectStore.getObject(key),
       getUtxo: (blockId: string) => this.objectStore.getUtxo(blockId),
-      // Standalone transactions validate against confirmed UTXOs plus accepted mempool outputs.
-      getMempoolUtxo: () => this.mempool.getUtxoMap(),
       putUtxo: (blockId: string, snapshot: UtxoSnapshot) => this.objectStore.putUtxo(blockId, snapshot),
       requestObject: (requestedObjectId: string) => this.sendGetObjectToAllPeers(requestedObjectId),
       waitForObject: (requestedObjectId: string, timeoutMs: number) => this.waitForObject(requestedObjectId, timeoutMs)
@@ -291,8 +289,14 @@ export class MarabuNode {
 
     await this.objectStore.putObject(objectId, objectToSave);
     if (objectToSave.type === "transaction" && !("height" in objectToSave)) {
-      // Validation has already spent inputs against the mempool view, so it is safe to apply now.
-      this.mempool.addTransaction(objectId, objectToSave);
+      // Store valid transaction objects even when they do not fit the active-chain mempool.
+      if (!this.mempool.tryAddTransaction(objectId, objectToSave)) {
+        this.resolveObjectWaiters(objectId, objectToSave);
+        throw new ApplicationObjectValidationError(
+          "INVALID_TX_OUTPOINT",
+          `Transaction ${objectId} cannot be applied to the active mempool`
+        );
+      }
     }
 
     if (objectToSave.type === "blockwithmetadata") {
