@@ -23,6 +23,16 @@ function assertNoError(messages: ParsedMessage[], context: string): void {
   assert.ok(!error, `unexpected error during ${context}`);
 }
 
+function assertError(
+  messages: ParsedMessage[],
+  expectedName: string,
+  context: string
+): void {
+  const error = findMessage(messages, "error") as { name?: unknown } | undefined;
+  assert.ok(error, `expected error during ${context}`);
+  assert.equal(error.name, expectedName);
+}
+
 function randomObjectId(): string {
   return randomBytes(32).toString("hex");
 }
@@ -132,17 +142,24 @@ test("PSET2: object exchange", async () => {
         port,
         lines: [helloLine, JSON.stringify({ type: "object", object: vectors.gossipTx })]
       });
-      assertNoError(gossipResponses, "gossip transaction");
-
-      const ihave = await peer.waitFor(
-        (message) =>
-          typeof message === "object" &&
-          message !== null &&
-          "type" in message &&
-          (message as Record<string, unknown>).type === "ihaveobject" &&
-          (message as Record<string, unknown>).objectid === vectors.gossipTxId
+      assertError(
+        gossipResponses,
+        "INVALID_TX_OUTPOINT",
+        "transaction outside active mempool"
       );
-      assert.ok(ihave, "expected ihaveobject gossip to peer");
+
+      await assert.rejects(
+        peer.waitFor(
+          (message) =>
+            typeof message === "object" &&
+            message !== null &&
+            "type" in message &&
+            (message as Record<string, unknown>).type === "ihaveobject" &&
+            (message as Record<string, unknown>).objectid === vectors.gossipTxId,
+          500
+        ),
+        /timeout/
+      );
     } finally {
       peer.socket.end();
     }

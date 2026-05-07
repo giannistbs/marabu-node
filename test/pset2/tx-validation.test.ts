@@ -65,6 +65,7 @@ async function buildVectors(): Promise<{
   coinbase: Record<string, unknown>;
   coinbaseId: string;
   validTx: Record<string, unknown>;
+  validTxId: string;
   invalidSigTx: Record<string, unknown>;
   invalidOutpointTx: Record<string, unknown>;
   unknownObjectTx: Record<string, unknown>;
@@ -93,6 +94,7 @@ async function buildVectors(): Promise<{
   };
 
   const validTx = await makeTx(coinbaseId, 0, 10);
+  const validTxId = objectId(validTx);
   const invalidOutpointTx = await makeTx(coinbaseId, 1, 10);
   const unknownObjectTx = await makeTx("00".repeat(32), 0, 10);
   const invalidConservationTx = await makeTx(coinbaseId, 0, 60);
@@ -110,6 +112,7 @@ async function buildVectors(): Promise<{
     coinbase,
     coinbaseId,
     validTx,
+    validTxId,
     invalidSigTx,
     invalidOutpointTx,
     unknownObjectTx,
@@ -134,7 +137,22 @@ test("PSET2: transaction validation", async () => {
       port,
       lines: [helloLine, JSON.stringify({ type: "object", object: vectors.validTx })]
     });
-    assertNoError(validResponses, "valid transaction");
+    assertError(
+      validResponses,
+      "INVALID_TX_OUTPOINT",
+      "valid transaction outside active mempool"
+    );
+
+    const getStoredTxResponses = await sendLines({
+      host,
+      port,
+      lines: [
+        helloLine,
+        JSON.stringify({ type: "getobject", objectid: vectors.validTxId })
+      ]
+    });
+    const storedTx = findMessage(getStoredTxResponses, "object");
+    assert.ok(storedTx, "expected mempool-rejected valid transaction to be stored");
 
     const unknownResponses = await sendLines({
       host,
