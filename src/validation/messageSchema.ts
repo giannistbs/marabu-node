@@ -15,7 +15,9 @@ import type {
   OutPoint,
   Block,
   GetChainTipMessage,
-  ChainTip
+  ChainTip,
+  GetMemPool,
+  Mempool
 } from "../types.js";
 import {
   ValidationError,
@@ -59,6 +61,10 @@ export function validateWireMessage(value: unknown): AnyMessage {
       return validateGetChainTipMessage(record);
     case "chaintip":
       return validateChainTipMessage(record);
+    case "getmempool":
+      return validateGetMempoolMessage(record);
+    case "mempool":
+      return validateMempoolMessage(record);
     default:
       throw new MessageValidationError("Unknown message type");
   }
@@ -380,6 +386,31 @@ function validateChainTipMessage(value: RecordValue): ChainTip {
   return {
     type: "chaintip",
     blockid: assertObjectId(value.blockid, "chaintip.blockid")
+  };
+}
+
+// Validates a "getmempool" request message.
+function validateGetMempoolMessage(value: RecordValue): GetMemPool {
+  assertExactKeys(value, ["type"]);
+
+  return {
+    type: "getmempool"
+  };
+}
+
+// Validates a "mempool" response message.
+function validateMempoolMessage(value: RecordValue): Mempool {
+  assertExactKeys(value, ["type", "txids"]);
+
+  if (!Array.isArray(value.txids)) {
+    throw new MessageValidationError("mempool.txids must be an array");
+  }
+
+  return {
+    type: "mempool",
+    txids: value.txids.map((txid, index) =>
+      assertObjectId(txid, `mempool.txids[${index}]`)
+    )
   };
 }
 
