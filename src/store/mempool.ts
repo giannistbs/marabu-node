@@ -29,6 +29,15 @@ export class Mempool {
     return this.txids.has(txid);
   }
 
+  tryAddTransaction(txid: string, transaction: Transaction): boolean {
+    if (!this.canApply(transaction)) {
+      return false;
+    }
+
+    this.addTransaction(txid, transaction);
+    return true;
+  }
+
   addTransaction(txid: string, transaction: Transaction): void {
     this.txids.add(txid);
 
