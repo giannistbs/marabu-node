@@ -1,5 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { parsePeerAddress } from "../validation/peerAddress.js";
 import { warn } from "../log.js";
 
@@ -33,6 +33,8 @@ export class PeerStore {
     if (this.loaded) {
       return;
     }
+
+    await this.removeTempFiles();
 
     let shouldPersist = false;
 
@@ -169,7 +171,28 @@ export class PeerStore {
     const payload = JSON.stringify({ peers: this.getPeers() }, null, 2) + "\n";
     const tempPath = `${this.filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    await writeFile(tempPath, payload, "utf8");
-    await rename(tempPath, this.filePath);
+    try {
+      await writeFile(tempPath, payload, "utf8");
+      await rename(tempPath, this.filePath);
+    } catch (error) {
+      await unlink(tempPath).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async removeTempFiles(): Promise<void> {
+    const directory = dirname(this.filePath);
+    const prefix = `${basename(this.filePath)}.tmp-`;
+    const entries = await readdir(directory).catch(() => []);
+
+    for (const entry of entries) {
+      if (!entry.startsWith(prefix)) {
+        continue;
+      }
+
+      await unlink(join(directory, entry)).catch((error: NodeJS.ErrnoException) => {
+        warn(`[peer-store] Failed to remove peer temp file '${entry}': ${error.message}`);
+      });
+    }
   }
 }
