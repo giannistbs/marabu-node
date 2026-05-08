@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 import { parsePeerAddress } from "../validation/peerAddress.js";
 import { warn } from "../log.js";
 
-const MAX_PEERS_PER_HOST = 2;
+const MAX_PEERS_PER_HOST = 1;
 
 interface StoredPeerFile {
   peers: string[];
