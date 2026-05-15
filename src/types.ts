@@ -144,6 +144,13 @@ export interface CoinbaseTransaction {
   outputs: Output[];
 }
 
+export const MINING_COINBASE_TX = {
+  type: "transaction",
+  height: 0,
+  outputs: [{pubkey: "624bf1c775a13a640a5238bff63e9005abb94b7d689d4f6670458940b73ba00a", value: 50_000_000_000_000}]
+} as CoinbaseTransaction;
+
+
 export type ApplicationObject = Transaction | CoinbaseTransaction | Block | BlockWithMetadata; 
 
 export interface ObjectMessage {
