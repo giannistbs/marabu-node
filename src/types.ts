@@ -71,6 +71,18 @@ export interface Block {
   type: "block";
 }
 
+export const BLOCK_TO_MINE = {
+  T: "00000000abc00000000000000000000000000000000000000000000000000000",
+  created: 0, // to be changed
+  miner: "Siesto",
+  nonce: "",
+  note: "Hello World!",
+  studentids: ["id8220146aueb", "id8220029aueb"],
+  previd: null,
+  txids: [],
+  type: "block"
+} as Block;
+
 export interface BlockWithMetadata {
   type: "blockwithmetadata";
   block: Block;
