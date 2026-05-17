@@ -71,6 +71,18 @@ export interface Block {
   type: "block";
 }
 
+export const BLOCK_TO_MINE = {
+  T: "00000000abc00000000000000000000000000000000000000000000000000000",
+  created: 0, // to be changed
+  miner: "Siesto",
+  nonce: "",
+  note: "Hello World!",
+  studentids: ["id8220146aueb", "id8220029aueb"],
+  previd: null,
+  txids: [],
+  type: "block"
+} as Block;
+
 export interface BlockWithMetadata {
   type: "blockwithmetadata";
   block: Block;
@@ -131,6 +143,13 @@ export interface CoinbaseTransaction {
   height: number;
   outputs: Output[];
 }
+
+export const MINING_COINBASE_TX = {
+  type: "transaction",
+  height: 0,
+  outputs: [{pubkey: "624bf1c775a13a640a5238bff63e9005abb94b7d689d4f6670458940b73ba00a", value: 50_000_000_000_000}]
+} as CoinbaseTransaction;
+
 
 export type ApplicationObject = Transaction | CoinbaseTransaction | Block | BlockWithMetadata; 
 

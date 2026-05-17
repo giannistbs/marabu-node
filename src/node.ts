@@ -1,4 +1,5 @@
 import net from "node:net";
+import fs from "node:fs";
 import { encodeMessage, decodeLine } from "./protocol/codec.js";
 import type { NodeConfig } from "./config.js";
 import { computeObjectId } from "./protocol/hashing.js";
@@ -18,7 +19,10 @@ import {
   type Transaction,
   type UtxoSnapshot,
   type GetChainTipMessage,
-  type ChainTip
+  type ChainTip,
+  Block,
+  BLOCK_TO_MINE,
+  MINING_COINBASE_TX
 } from "./types.js";
 import {
   ApplicationObjectValidationError,
@@ -28,6 +32,8 @@ import {
 import { MessageValidationError } from "./validation/messageSchema.js";
 import { parsePeerAddress, isValidPeerAddress } from "./validation/peerAddress.js";
 import { log, warn, error as logError } from "./log.js";
+import { time } from "node:console";
+import { spawnMiningWorkers } from "./mining/mine.js";
 
 interface ConnectionState {
   id: number;
@@ -216,20 +222,27 @@ export class MarabuNode {
     const incomingObjectId = computeObjectId(message.object);
 
     try {
+      // If we've already seen and stored this object, ignore.
       if (await this.objectStore.hasObject(incomingObjectId)) {
         return true;
       }
 
+      // Check if we're already validating this object in another request.
       const inFlightValidation = this.inFlightObjectValidations.get(incomingObjectId);
       if (inFlightValidation !== undefined) {
+        // Wait for completion of parallel/previous validation attempt.
         await inFlightValidation;
         return true;
       }
 
+      // Mark that we've received this object (for dependency tracking).
       this.markObjectArrived(incomingObjectId);
 
+      // Kick off async validation and storage of the object.
+      // Store the promise so other requests can await the same work.
       const validation = this.validateAndStoreObject(incomingObjectId, message.object)
         .catch((error: unknown) => {
+          // If validation/storage fails, reject object waiters for dependencies downstream.
           const failure = error instanceof Error ? error : new Error(String(error));
           this.rejectObjectWaiters(
             incomingObjectId,
@@ -238,15 +251,19 @@ export class MarabuNode {
           throw failure;
         })
         .finally(() => {
+          // Once completed, remove from in-flight validations map.
           this.inFlightObjectValidations.delete(incomingObjectId);
         });
 
+      // Save in-flight validation promise so other arrivals can join.
       this.inFlightObjectValidations.set(incomingObjectId, validation);
+
+      // Wait for validation/storage to finish.
       await validation;
       return true;
     } catch (error) {
       if (error instanceof MissingParentBlockError) {
-        // Parent metadata without its UTXO snapshot is treated as unavailable chain state.
+        // If we're missing UTXO state for a parent block, let peer know the object is unfetchable.
         this.sendErrorAndClose(socket, {
           type: "error",
           name: "UNFINDABLE_OBJECT",
@@ -256,6 +273,7 @@ export class MarabuNode {
       }
 
       if (error instanceof ApplicationObjectValidationError) {
+        // Application-level validation (e.g. signature, double-spend, etc)
         this.sendErrorAndClose(socket, {
           type: "error",
           name: error.errorName,
@@ -264,6 +282,7 @@ export class MarabuNode {
         return false;
       }
 
+      // Unexpected error so we let it propagate .
       throw error;
     }
   }
@@ -296,6 +315,8 @@ export class MarabuNode {
           "INVALID_TX_OUTPOINT",
           `Transaction ${objectId} cannot be applied to the active mempool`
         );
+      } else {
+        this.resetMiningBlock();
       }
     }
 
@@ -305,6 +326,7 @@ export class MarabuNode {
       const tipChanged = await this.updateChainTip({ type: "chaintip", blockid: objectId });
       if (tipChanged) {
         await this.rebuildMempoolAfterBlock(objectToSave, previousTipId);
+        this.resetMiningBlock()
       }
     }
 
@@ -646,6 +668,36 @@ export class MarabuNode {
     for (const objectId of this.pendingObjectWaiters.keys()) {
       this.rejectObjectWaiters(objectId, error);
     }
+  }
+
+  private async resetMiningBlock() {
+    const chaintip = await this.objectStore.getChainTip();
+    const currentBlock = await this.objectStore.getObject(chaintip);
+
+    if (currentBlock.type === "blockwithmetadata") {
+
+      // Build coinbasetxid for the correct height
+      const coinbase = { ...MINING_COINBASE_TX };
+      coinbase.height = currentBlock.height + 1;
+      const coinbaseId = computeObjectId(coinbase);
+
+      const block = { ...BLOCK_TO_MINE };
+      block.created = Math.floor(Date.now() / 1000);
+      block.miner = this.config.miner;
+      block.previd = chaintip;
+      block.txids = [coinbaseId, ...this.mempool.getTxids()];
+
+      spawnMiningWorkers(block, this.config.numOfWorkers).then(async winner => {
+        const winnerId = computeObjectId(winner);
+        await fs.promises.appendFile(
+          "mined-blocks.json",
+          JSON.stringify({ id: winnerId, block: winner }) + "\n"
+        );
+        await this.validateAndStoreObject(coinbaseId, coinbase);
+        await this.validateAndStoreObject(winnerId, winner);
+      });
+    }
+
   }
 
 
