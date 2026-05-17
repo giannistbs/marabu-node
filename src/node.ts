@@ -316,11 +316,13 @@ export class MarabuNode {
           `Transaction ${objectId} cannot be applied to the active mempool`
         );
       } else {
+        log(`[mempool] new tx ${objectId}`);
         this.resetMiningBlock();
       }
     }
 
     if (objectToSave.type === "blockwithmetadata") {
+      log(`[chain] new block ${objectId} height=${objectToSave.height}`);
       // Keep the previous tip so a real tip change can remove confirmed txs and restore reorg orphans.
       const previousTipId = await this.objectStore.getChainTip();
       const tipChanged = await this.updateChainTip({ type: "chaintip", blockid: objectId });
@@ -848,9 +850,7 @@ export class MarabuNode {
       }
     });
 
-    socket.on("error", (error) => {
-      warn(`[connection ${state.id}] ${error.message}`);
-    });
+    socket.on("error", () => {});
 
     socket.on("close", () => {
       this.connections.delete(socket);
@@ -1020,7 +1020,6 @@ export class MarabuNode {
       socket.off("error", onError);
       socket.off("connect", onConnect);
       socket.destroy();
-      warn(`[outbound ${peer}] FAIL: connection timed out`);
       this.recordFailedAttempt(peer);
     };
 
@@ -1030,7 +1029,6 @@ export class MarabuNode {
       socket.off("timeout", onTimeout);
       socket.off("connect", onConnect);
       socket.destroy();
-      warn(`[outbound ${peer}] FAIL: ${error.message}`);
       this.recordFailedAttempt(peer);
     };
 
