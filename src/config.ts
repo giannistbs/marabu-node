@@ -12,6 +12,7 @@ const DEFAULT_VERSION = "0.10.0";
 const DEFAULT_AGENT = "Siesto/0.10.0";
 const DEFAULT_RECONNECT_INTERVAL_MS = 30_000;
 const DEFAULT_NUM_OF_WORKERS = 1;
+const DEFAULT_MINER_NAME = "Siesto";
 
 export interface NodeConfig {
   host: string;
@@ -23,6 +24,7 @@ export interface NodeConfig {
   reconnectIntervalMs: number;
   bootstrapPeers: string[];
   numOfWorkers: number;
+  miner: string;
 }
 
 // Loads node configuration from environment variables and project defaults.
@@ -39,6 +41,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): NodeConfig {
       env.MARABU_RECONNECT_INTERVAL_MS ?? DEFAULT_RECONNECT_INTERVAL_MS
     ),
     bootstrapPeers: [...DEFAULT_BOOTSTRAP_PEERS],
-    numOfWorkers: Number(env.NUM_OF_WORKERS ?? DEFAULT_NUM_OF_WORKERS)
+    numOfWorkers: Number(env.NUM_OF_WORKERS ?? DEFAULT_NUM_OF_WORKERS),
+    miner: env.MINER_NAME ?? DEFAULT_MINER_NAME
   };
 }
