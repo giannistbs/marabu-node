@@ -32,6 +32,8 @@ async function main(): Promise<void> {
   log(`[startup] Listening on ${config.host}:${listeningPort}`);
   log(`[startup] Peer store path: ${config.peersFile}`);
   log(`[startup] Object store path: ${config.objectStorePath}`);
+  log(`[startup] Number of Mining Workers: ${config.numOfWorkers}`);
+
 
   // Guard against duplicate shutdown handling from repeated signals.
   let stopping = false;
