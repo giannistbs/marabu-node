@@ -671,21 +671,21 @@ export class MarabuNode {
   }
 
   private async resetMiningBlock() {
-    var block = BLOCK_TO_MINE;
-    block.created = Math.floor(Date.now() / 1000);
-    block.miner = this.config.miner;
-    block.txids = this.mempool.getTxids();
     const chaintip = await this.objectStore.getChainTip();
     const currentBlock = await this.objectStore.getObject(chaintip);
 
     if (currentBlock.type === "blockwithmetadata") {
 
       // Build coinbasetxid for the correct height
-      const currentHeight = currentBlock.height
-      const coinbase = MINING_COINBASE_TX;
-      coinbase.height = currentHeight + 1;
+      const coinbase = { ...MINING_COINBASE_TX };
+      coinbase.height = currentBlock.height + 1;
       const coinbaseId = computeObjectId(coinbase);
-      block.txids.unshift(coinbaseId);
+
+      const block = { ...BLOCK_TO_MINE };
+      block.created = Math.floor(Date.now() / 1000);
+      block.miner = this.config.miner;
+      block.previd = chaintip;
+      block.txids = [coinbaseId, ...this.mempool.getTxids()];
 
       spawnMiningWorkers(block, this.config.numOfWorkers).then(async winner => {
         const winnerId = computeObjectId(winner);
