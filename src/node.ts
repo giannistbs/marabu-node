@@ -1,4 +1,5 @@
 import net from "node:net";
+import fs from "node:fs";
 import { encodeMessage, decodeLine } from "./protocol/codec.js";
 import type { NodeConfig } from "./config.js";
 import { computeObjectId } from "./protocol/hashing.js";
@@ -678,15 +679,23 @@ export class MarabuNode {
     const currentBlock = await this.objectStore.getObject(chaintip);
 
     if (currentBlock.type === "blockwithmetadata") {
-      
+
       // Build coinbasetxid for the correct height
       const currentHeight = currentBlock.height
       const coinbase = MINING_COINBASE_TX;
       coinbase.height = currentHeight + 1;
-      const cointBaseId = computeObjectId(coinbase);
-      block.txids.unshift(cointBaseId);
+      const coinbaseId = computeObjectId(coinbase);
+      block.txids.unshift(coinbaseId);
 
-      spawnMiningWorkers(block, this.config.numOfWorkers);
+      spawnMiningWorkers(block, this.config.numOfWorkers).then(async winner => {
+        const winnerId = computeObjectId(winner);
+        await fs.promises.appendFile(
+          "mined-blocks.json",
+          JSON.stringify({ id: winnerId, block: winner }) + "\n"
+        );
+        await this.validateAndStoreObject(coinbaseId, coinbase);
+        await this.validateAndStoreObject(winnerId, winner);
+      });
     }
 
   }
