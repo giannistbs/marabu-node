@@ -8,6 +8,7 @@ import {
 import { computeObjectId } from "../protocol/hashing.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const tsxUrl = import.meta.resolve("tsx");
 
 export const REQUIRED_BLOCK_TARGET =
   "00000000abc00000000000000000000000000000000000000000000000000000";
@@ -30,7 +31,8 @@ export async function spawnMiningWorkers(block: Block, numOfWorkers: number): Pr
 
   const workerPromises: Promise<Block>[] = [];
   for (let i = 0; i < numOfWorkers; i++) {
-    const worker = new Worker(join(__dirname, "mineWorkerBoot.mjs"), {
+    const worker = new Worker(join(__dirname, "mineWorker.ts"), {
+      execArgv: ["--import", tsxUrl],
       workerData: { block: { ...block }, step: numOfWorkers, workerSlot: i }
     });
     activeWorkers.push(worker);
