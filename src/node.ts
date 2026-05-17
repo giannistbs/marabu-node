@@ -672,6 +672,7 @@ export class MarabuNode {
   private async resetMiningBlock() {
     var block = BLOCK_TO_MINE;
     block.created = Math.floor(Date.now() / 1000);
+    block.miner = this.config.miner;
     block.txids = this.mempool.getTxids();
     const chaintip = await this.objectStore.getChainTip();
     const currentBlock = await this.objectStore.getObject(chaintip);
