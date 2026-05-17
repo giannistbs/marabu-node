@@ -31,7 +31,7 @@ export async function spawnMiningWorkers(block: Block, numOfWorkers: number): Pr
   const workerPromises: Promise<Block>[] = [];
   for (let i = 0; i < numOfWorkers; i++) {
     const worker = new Worker(join(__dirname, "mineWorker.ts"), {
-      execArgv: ["--import", "tsx"],
+      execArgv: ["--import", "tsx/esm"],
       workerData: { block: { ...block }, step: numOfWorkers, workerSlot: i }
     });
     activeWorkers.push(worker);
