@@ -20,7 +20,7 @@ import {
   type UtxoSnapshot,
   type GetChainTipMessage,
   type ChainTip,
-  Block,
+  type Block,
   BLOCK_TO_MINE,
   MINING_COINBASE_TX
 } from "./types.js";
@@ -32,7 +32,6 @@ import {
 import { MessageValidationError } from "./validation/messageSchema.js";
 import { parsePeerAddress, isValidPeerAddress } from "./validation/peerAddress.js";
 import { log, warn, error as logError } from "./log.js";
-import { time } from "node:console";
 import { spawnMiningWorkers } from "./mining/mine.js";
 
 interface ConnectionState {
@@ -483,7 +482,7 @@ export class MarabuNode {
 
   // Handles a chaintip message from a peer.
   private async handleChaintipMessage(
-    socket: net.Socket,
+    _socket: net.Socket,
     message: ChainTip
   ): Promise<boolean> {
     const blockid = message.blockid;
@@ -499,7 +498,7 @@ export class MarabuNode {
   // Handles a getchaintip message from a peer.
   private async handleGetChaintipMessage(
     socket: net.Socket,
-    message: GetChainTipMessage
+    _message: GetChainTipMessage
   ): Promise<boolean> {
     try {
       const chainTip = await this.objectStore.getChainTip();
@@ -1023,7 +1022,7 @@ export class MarabuNode {
       this.recordFailedAttempt(peer);
     };
 
-    const onError = (error: Error): void => {
+    const onError = (_error: Error): void => {
       // Reset listeners and state on failed outbound attempts.
       this.dialingPeers.delete(peer);
       socket.off("timeout", onTimeout);
