@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp src/mining/mineWorker.mjs dist/mining/mineWorker.mjs",
     "start": "node dist/index.js",
     "test": "find test -name '*.test.ts' -print | xargs node --import tsx --test"
   },
