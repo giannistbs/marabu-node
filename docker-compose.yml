@@ -13,6 +13,7 @@ services:
       - "${MARABU_PORT:-18018}:${MARABU_PORT:-18018}"
     volumes:
       - ./data:/app/data
+      - ./data/mined-blocks.json:/app/mined-blocks.json
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('net').connect(+(process.env.MARABU_PORT||18018),'127.0.0.1',function(){this.destroy();process.exit(0)}).on('error',function(){process.exit(1)})\""]
       interval: 30s
