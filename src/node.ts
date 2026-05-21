@@ -109,10 +109,273 @@ export class MarabuNode {
   private nextConnectionId = 1;
   private running = false;
 
+  /*//////////////////////////////////////////////////////////////
+                            CONSTRUCTOR
+  //////////////////////////////////////////////////////////////*/
+
+  // Initializes socket server listeners and shared runtime state.
+  constructor(
+    private readonly config: NodeConfig,
+    private readonly peerStore: PeerStore,
+    private readonly objectStore: ObjectStore
+  ) {
+    this.server = net.createServer();
+    // Track inbound sockets and route them through common connection handling.
+    this.server.on("connection", (socket) => {
+      const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? 0}`;
+      log(`[inbound ${remote}] OK: connected`);
+      this.handleConnectedSocket(socket, false);
+    });
+    // Surface server-level failures for observability.
+    this.server.on("error", (error) => {
+      logError(`[server] ${error.message}`);
+    });
+  }
 
   /*//////////////////////////////////////////////////////////////
-                            HANDLER FUNCTIONS
+                            PUBLIC NODE API
   //////////////////////////////////////////////////////////////*/
+
+  // Starts peer discovery, begins listening, and schedules reconnect attempts.
+  async start(): Promise<void> {
+
+    // Leave early if the node is already running.
+    if (this.running) {
+      return;
+    }
+
+    // Load persisted peers before opening outbound connections.
+    await this.peerStore.load();
+
+    // Start the TCP server and fail startup if bind/listen errors occur.
+    await new Promise<void>((resolve, reject) => {
+      const onListening = (): void => {
+        this.server.off("error", onError);
+        resolve();
+      };
+
+      const onError = (error: Error): void => {
+        this.server.off("listening", onListening); // @q: why listen onerror?
+        reject(error);
+      };
+
+      this.server.once("listening", onListening);
+      this.server.once("error", onError);
+      this.server.listen(this.config.port, this.config.host);
+    });
+
+    const tipId = await this.objectStore.getChainTip();
+    const tipUtxo = await this.objectStore.getUtxo(tipId);
+    // The mempool is intentionally in-memory, so rebuild its base view on every boot.
+    this.mempool.initialize(tipUtxo);
+
+    this.running = true;
+    // Attempt immediate outbound dials instead of waiting for the first interval tick.
+    this.tryConnectDiscoveredPeers();
+
+    // Keep retrying known peers at a fixed interval.
+    this.reconnectTimer = setInterval(() => {
+      this.tryConnectDiscoveredPeers();
+    }, this.config.reconnectIntervalMs);
+
+
+    // Wait briefly to allow outbound peer connections, then ask for chain and mempool state.
+    setTimeout(() => {
+      this.sendGetChaintipToAllPeers();
+      this.sendGetMempoolToAllPeers();
+    }, 500); // 500ms delay; adjust as needed based on network conditions
+    
+  }
+
+  // Stops reconnect loops, tears down sockets, and closes the listening server.
+  async stop(): Promise<void> {
+    if (!this.running) {
+      return;
+    }
+
+    this.running = false;
+
+    if (this.reconnectTimer !== null) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Collect pending processing promises before destroying sockets so we can
+    // wait for in-flight handlers to settle before closing the object store.
+    const pendingProcessing = Array.from(this.connections.values()).flatMap(
+      (state) => Array.from(state.inFlightHandlers)
+    );
+
+    // Destroy all active sockets so in-flight handlers terminate promptly.
+    for (const socket of this.connections.keys()) {
+      socket.destroy();
+    }
+    this.connections.clear();
+    this.outboundSocketsByPeer.clear();
+    this.dialingPeers.clear();
+    this.rejectAllPendingObjectWaiters(new Error("Node is stopping"));
+
+    // Wait for any in-flight message handlers to finish before closing the
+    // object store; this prevents LevelDB errors on CI where disk I/O is slow.
+    await Promise.allSettled(pendingProcessing);
+
+    if (this.server.listening) {
+      // Wait for server close completion to ensure clean shutdown.
+      await new Promise<void>((resolve) => {
+        this.server.close(() => resolve());
+      });
+    }
+
+    await this.objectStore.close();
+  }
+
+  // Validates and gossips a locally originated transaction, returning its object ID.
+  async submitTransaction(tx: Transaction): Promise<string> {
+    const txid = computeObjectId(tx);
+    await this.validateAndStoreObject(txid, tx);
+    return txid;
+  }
+
+  // Returns the effective bound port after startup (useful when binding to 0).
+  getListeningPort(): number {
+    const address = this.server.address();
+    if (address !== null && typeof address === "object") {
+      return address.port;
+    }
+
+    return this.config.port;
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                            CONNECTION LIFECYCLE
+  //////////////////////////////////////////////////////////////*/
+
+  // Registers a new socket, wires event handlers, and kicks off handshake messages.
+  private handleConnectedSocket(
+    socket: net.Socket,
+    outbound: boolean,
+    outboundPeer: string | null = null
+  ): void {
+    // Create per-connection parsing and handshake state.
+    const state: ConnectionState = {
+      id: this.nextConnectionId,
+      buffer: "",
+      helloReceived: false,
+      outbound,
+      peerLabel: outboundPeer ?? this.describeSocket(socket),
+      inFlightHandlers: new Set()
+    };
+
+    this.nextConnectionId += 1;
+    this.connections.set(socket, state);
+
+    // Keep outbound-peer lookup in sync for dedupe and reconnect behavior.
+    if (outboundPeer !== null) {
+      this.outboundSocketsByPeer.set(outboundPeer, socket);
+    }
+
+    socket.setNoDelay(true);
+    socket.setKeepAlive(true);
+
+    // Accumulate stream data and parse line-delimited messages.
+    socket.on("data", (chunk) => {
+      const textChunk = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      try {
+        this.handleData(socket, textChunk);
+      } catch (error: unknown) {
+        this.handleConnectionFailure(socket, state, error);
+      }
+    });
+
+    socket.on("error", () => {});
+
+    socket.on("close", () => {
+      this.connections.delete(socket);
+      if (outboundPeer !== null) {
+        // Remove mapping only if it still points to this closed socket.
+        const mappedSocket = this.outboundSocketsByPeer.get(outboundPeer);
+        if (mappedSocket === socket) {
+          this.outboundSocketsByPeer.delete(outboundPeer);
+        }
+        this.dialingPeers.delete(outboundPeer);
+      }
+    });
+
+    // Begin protocol handshake immediately after connection setup.
+    this.sendMessage(socket, {
+      type: "hello",
+      version: this.config.version,
+      agent: this.config.agent
+    });
+    this.sendMessage(socket, {
+      type: "getpeers"
+    });
+  }
+
+  // Buffers stream chunks into complete protocol lines and dispatches messages.
+  private handleData(socket: net.Socket, chunk: string): void {
+    const state = this.connections.get(socket);
+    if (state === undefined || socket.destroyed) {
+      return;
+    }
+
+    state.buffer += chunk;
+
+    while (true) {
+      // Wait for a full newline-delimited frame before attempting decode.
+      const newlineIndex = state.buffer.indexOf("\n");
+      if (newlineIndex < 0) {
+        break;
+      }
+
+      let line = state.buffer.slice(0, newlineIndex);
+      state.buffer = state.buffer.slice(newlineIndex + 1);
+
+      if (line.endsWith("\r")) {
+        line = line.slice(0, -1);
+      }
+
+      if (line.trim() === "") {
+        continue;
+      }
+
+      let message: AnyMessage;
+      try {
+        // Parse and validate message shape before protocol dispatch.
+        message = decodeLine(line);
+      } catch (error) {
+        const description =
+          error instanceof MessageValidationError
+            ? error.message
+            : "Unable to parse incoming message";
+
+        logError(description)
+
+        this.sendErrorAndClose(socket, {
+          type: "error",
+          name: "INVALID_FORMAT",
+          description
+        });
+        return;
+      }
+
+      // Start the handler and let awaited work resume later without blocking this socket.
+      const handler = this.handleValidatedMessage(socket, state, message)
+        .then((keepConnection) => {
+          if (!keepConnection) {
+            return;
+          }
+        })
+        .catch((error: unknown) => {
+          this.handleConnectionFailure(socket, state, error);
+        })
+        .finally(() => {
+          state.inFlightHandlers.delete(handler);
+        });
+
+      state.inFlightHandlers.add(handler);
+    }
+  }
 
   // Enforces handshake order and routes validated messages to protocol handlers.
   private async handleValidatedMessage(
@@ -190,6 +453,58 @@ export class MarabuNode {
       }
     }
   }
+
+  // Reports an unexpected handler failure to the peer and records it in local logs.
+  private handleConnectionFailure(
+    socket: net.Socket,
+    state: ConnectionState,
+    error: unknown
+  ): void {
+    const description =
+      error instanceof Error ? error.message : "Unexpected connection error";
+    try {
+      this.sendErrorAndClose(socket, {
+        type: "error",
+        name: "INTERNAL_ERROR",
+        description
+      });
+    } catch (closeError) {
+      logError(
+        `[connection ${state.id}] close failed: ${
+          closeError instanceof Error ? closeError.message : String(closeError)
+        }`
+      );
+    }
+
+    logError(
+      `[connection ${state.id}] handleData failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+
+  // Formats a socket's remote endpoint for logs and state labels.
+  private describeSocket(socket: net.Socket): string {
+    const host = socket.remoteAddress ?? "unknown-host";
+    const port = socket.remotePort ?? 0;
+    return `${host}:${port}`;
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                            PEER PROTOCOL
+  //////////////////////////////////////////////////////////////*/
+
+  // Stores newly learned peers and attempts connections when the set expands.
+  private async handlePeers(peers: string[]): Promise<void> {
+    const changed = await this.peerStore.mergeAndPersist(peers);
+    if (changed) {
+      this.tryConnectDiscoveredPeers();
+    }
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                            OBJECT PROTOCOL
+  //////////////////////////////////////////////////////////////*/
 
   // Handles a getobject message from a peer.
   private async handleGetObjectMessage(socket: net.Socket, message: GetObjectMessage): Promise<boolean> {
@@ -286,6 +601,83 @@ export class MarabuNode {
     }
   }
 
+  // Handles an ihaveobject message from a peer.
+  private async handleIHaveObjectMessage(
+    socket: net.Socket,
+    message: IHaveObjectMessage
+  ): Promise<void> {
+    const objectId = message.objectid;
+    if (await this.objectStore.hasObject(objectId)) {
+      return;
+    }
+
+    this.sendGetObjectToPeer(socket, objectId);
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                            CHAIN TIP PROTOCOL
+  //////////////////////////////////////////////////////////////*/
+
+  // Handles a getchaintip message from a peer.
+  private async handleGetChaintipMessage(
+    socket: net.Socket,
+    _message: GetChainTipMessage
+  ): Promise<boolean> {
+    try {
+      const chainTip = await this.objectStore.getChainTip();
+      this.sendMessage(socket, {
+        type: "chaintip",
+        blockid: chainTip
+      });
+      return true;
+    } catch (error: unknown) {
+      if (isMissingObjectStoreError(error)) {
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  // Handles a chaintip message from a peer.
+  private async handleChaintipMessage(
+    _socket: net.Socket,
+    message: ChainTip
+  ): Promise<boolean> {
+    const blockid = message.blockid;
+    if (await this.objectStore.hasObject(blockid)) {
+      return true;
+    }
+
+    this.sendGetObjectToAllPeers(blockid);
+    
+    return true;
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                            MEMPOOL PROTOCOL
+  //////////////////////////////////////////////////////////////*/
+
+  // Handles a getmempool message from a peer.
+  private handleGetMempoolMessage(socket: net.Socket, _message: GetMemPool): void {
+    this.sendMessage(socket, {
+      type: "mempool",
+      txids: this.mempool.getTxids()
+    });
+  }
+
+  // Requests mempool transactions that this node has not seen yet.
+  private async handleMempoolMessage(message: MempoolMessage): Promise<void> {
+    for (const txid of message.txids) {
+      if (!await this.objectStore.hasObject(txid)) {
+        this.sendGetObjectToAllPeers(txid);
+      }
+    }
+  }
+
+  /*//////////////////////////////////////////////////////////////
+                            OBJECT VALIDATION AND WAITERS
+  //////////////////////////////////////////////////////////////*/
+
   // Validates incoming objects, stores accepted ones, and applies chain/mempool side effects.
   private async validateAndStoreObject(
     objectId: string,
@@ -334,211 +726,6 @@ export class MarabuNode {
     this.resolveObjectWaiters(objectId, objectToSave);
     this.sendIHaveObjectToAllPeers(objectId);
     return objectToSave;
-  }
-
-  // Handles an ihaveobject message from a peer.
-  private async handleIHaveObjectMessage(
-    socket: net.Socket,
-    message: IHaveObjectMessage
-  ): Promise<void> {
-    const objectId = message.objectid;
-    if (await this.objectStore.hasObject(objectId)) {
-      return;
-    }
-
-    this.sendGetObjectToPeer(socket, objectId);
-  }
-
-  // Stores newly learned peers and attempts connections when the set expands.
-  private async handlePeers(peers: string[]): Promise<void> {
-    const changed = await this.peerStore.mergeAndPersist(peers);
-    if (changed) {
-      this.tryConnectDiscoveredPeers();
-    }
-  }
-
-  // Sends an ihaveobject message to all connected peers
-  private sendIHaveObjectToAllPeers(objectId: string): void {
-    for (const socket of this.connections.keys()) {
-      this.sendMessage(socket, {
-        type: "ihaveobject",
-        objectid: objectId
-      });
-    }
-  }
-
-  // Sends getobject message to all connected peers
-  private sendGetObjectToAllPeers(objectId: string): void {
-    for (const socket of this.connections.keys()) {
-      this.sendGetObjectToPeer(socket, objectId);
-    }
-  }
-
-  // Updates the stored chain tip if the candidate block is strictly better.
-  private async updateChainTip(chaintip: ChainTip): Promise<boolean> {
-    // Fetch the candidate block - must be a valid blockwithmetadata object.
-    const newTipObject = await this.objectStore.getObject(chaintip.blockid);
-    if (newTipObject.type !== "blockwithmetadata") {
-      throw new Error(`Chain tip candidate ${chaintip.blockid} is not a block`);
-    }
-
-    let currentTipBlockId: string;
-    try {
-      // Try to retrieve the current chain tip's block id from the object store.
-      currentTipBlockId = await this.objectStore.getChainTip();
-    } catch (error: unknown) {
-      // If there is no chain tip stored yet accept the candidate as the new tip.
-      if (isMissingObjectStoreError(error)) {
-        await this.objectStore.putChainTip(chaintip.blockid);
-        return true;
-      }
-      // Other errors should propagate.
-      throw error;
-    }
-
-    // Fetch the current tip block object for comparison.
-    const currentTipObject = await this.objectStore.getObject(currentTipBlockId);
-    if (currentTipObject.type !== "blockwithmetadata") {
-      // Corrupted store: chain tip does not refer to a block.
-      throw new Error(`Stored chain tip ${currentTipBlockId} is not a block`);
-    }
-
-    // If the candidate's height is higher, update the tip.
-    if (newTipObject.height > currentTipObject.height) {
-      await this.objectStore.putChainTip(chaintip.blockid);
-      return true;
-    }
-
-    // Otherwise, keep the current tip.
-    return false;
-  }
-
-
-  // Rebuilds the in-memory mempool after a new active-chain block is accepted.
-  private async rebuildMempoolAfterBlock(
-    newBlock: BlockWithMetadata,
-    previousTipId: string
-  ): Promise<void> {
-    const newBlockId = computeObjectId(newBlock);
-
-    const confirmedTxids = new Set(newBlock.block.txids);
-    const orphanedTxids: string[] = [];
-
-    if (newBlock.block.previd !== previousTipId) {
-      // Reorg case: old-chain txs may become mempool candidates again.
-      const forkDiff = await collectForkDiff(previousTipId, newBlockId, this.objectStore);
-      for (const txid of forkDiff.confirmed) {
-        confirmedTxids.add(txid);
-      }
-      orphanedTxids.push(...forkDiff.orphaned);
-    }
-
-    const survivingTxids = this.mempool
-      .getTxids()
-      .filter((txid) => !confirmedTxids.has(txid));
-    const candidateTxids = [
-      ...survivingTxids,
-      ...orphanedTxids.filter((txid) => !confirmedTxids.has(txid))
-    ];
-    const candidates: { txid: string; transaction: Transaction }[] = [];
-
-    // Reload candidates from storage so rebuild only replays transaction objects we still have.
-    for (const txid of candidateTxids) {
-      try {
-        const object = await this.objectStore.getObject(txid);
-        if (object.type === "transaction" && !("height" in object)) {
-          candidates.push({ txid, transaction: object });
-        }
-      } catch (error: unknown) {
-        if (!isMissingObjectStoreError(error)) {
-          throw error;
-        }
-      }
-    }
-
-    const newUtxo = await this.objectStore.getUtxo(newBlockId);
-    // Reset to confirmed chain state, then replay surviving/orphaned transactions that still fit.
-    this.mempool.rebuild(newUtxo, candidates);
-  }
-
-
-  // Handles a getmempool message from a peer.
-  private handleGetMempoolMessage(socket: net.Socket, _message: GetMemPool): void {
-    this.sendMessage(socket, {
-      type: "mempool",
-      txids: this.mempool.getTxids()
-    });
-  }
-
-  // Requests mempool transactions that this node has not seen yet.
-  private async handleMempoolMessage(message: MempoolMessage): Promise<void> {
-    for (const txid of message.txids) {
-      if (!await this.objectStore.hasObject(txid)) {
-        this.sendGetObjectToAllPeers(txid);
-      }
-    }
-  }
-
-
-  // Handles a chaintip message from a peer.
-  private async handleChaintipMessage(
-    _socket: net.Socket,
-    message: ChainTip
-  ): Promise<boolean> {
-    const blockid = message.blockid;
-    if (await this.objectStore.hasObject(blockid)) {
-      return true;
-    }
-
-    this.sendGetObjectToAllPeers(blockid);
-    
-    return true;
-  }
-
-  // Handles a getchaintip message from a peer.
-  private async handleGetChaintipMessage(
-    socket: net.Socket,
-    _message: GetChainTipMessage
-  ): Promise<boolean> {
-    try {
-      const chainTip = await this.objectStore.getChainTip();
-      this.sendMessage(socket, {
-        type: "chaintip",
-        blockid: chainTip
-      });
-      return true;
-    } catch (error: unknown) {
-      if (isMissingObjectStoreError(error)) {
-        return true;
-      }
-      throw error;
-    }
-  }
-
-  // Sends getChaintip message to all connected peers
-  private sendGetChaintipToAllPeers(): void {
-    for (const socket of this.connections.keys()) {
-      this.sendMessage(socket, {
-        type: "getchaintip"
-      });
-    }
-  }
-
-  // Sends a getmempool request to all connected peers.
-  private sendGetMempoolToAllPeers(): void {
-    for (const socket of this.connections.keys()) {
-      this.sendMessage(socket, {
-        type: "getmempool"
-      });
-    }
-  }
-
-  // Sends a getobject request to a connected peer.
-  private sendGetObjectToPeer(socket: net.Socket, objectId: string): void {
-    this.sendMessage(socket, {
-      type: "getobject",
-      objectid: objectId
-    });
   }
 
   // Waits for a missing object to be stored while the event loop keeps processing messages.
@@ -671,6 +858,96 @@ export class MarabuNode {
     }
   }
 
+  /*//////////////////////////////////////////////////////////////
+                            CHAIN AND MINING STATE
+  //////////////////////////////////////////////////////////////*/
+
+  // Updates the stored chain tip if the candidate block is strictly better.
+  private async updateChainTip(chaintip: ChainTip): Promise<boolean> {
+    // Fetch the candidate block - must be a valid blockwithmetadata object.
+    const newTipObject = await this.objectStore.getObject(chaintip.blockid);
+    if (newTipObject.type !== "blockwithmetadata") {
+      throw new Error(`Chain tip candidate ${chaintip.blockid} is not a block`);
+    }
+
+    let currentTipBlockId: string;
+    try {
+      // Try to retrieve the current chain tip's block id from the object store.
+      currentTipBlockId = await this.objectStore.getChainTip();
+    } catch (error: unknown) {
+      // If there is no chain tip stored yet accept the candidate as the new tip.
+      if (isMissingObjectStoreError(error)) {
+        await this.objectStore.putChainTip(chaintip.blockid);
+        return true;
+      }
+      // Other errors should propagate.
+      throw error;
+    }
+
+    // Fetch the current tip block object for comparison.
+    const currentTipObject = await this.objectStore.getObject(currentTipBlockId);
+    if (currentTipObject.type !== "blockwithmetadata") {
+      // Corrupted store: chain tip does not refer to a block.
+      throw new Error(`Stored chain tip ${currentTipBlockId} is not a block`);
+    }
+
+    // If the candidate's height is higher, update the tip.
+    if (newTipObject.height > currentTipObject.height) {
+      await this.objectStore.putChainTip(chaintip.blockid);
+      return true;
+    }
+
+    // Otherwise, keep the current tip.
+    return false;
+  }
+
+  // Rebuilds the in-memory mempool after a new active-chain block is accepted.
+  private async rebuildMempoolAfterBlock(
+    newBlock: BlockWithMetadata,
+    previousTipId: string
+  ): Promise<void> {
+    const newBlockId = computeObjectId(newBlock);
+
+    const confirmedTxids = new Set(newBlock.block.txids);
+    const orphanedTxids: string[] = [];
+
+    if (newBlock.block.previd !== previousTipId) {
+      // Reorg case: old-chain txs may become mempool candidates again.
+      const forkDiff = await collectForkDiff(previousTipId, newBlockId, this.objectStore);
+      for (const txid of forkDiff.confirmed) {
+        confirmedTxids.add(txid);
+      }
+      orphanedTxids.push(...forkDiff.orphaned);
+    }
+
+    const survivingTxids = this.mempool
+      .getTxids()
+      .filter((txid) => !confirmedTxids.has(txid));
+    const candidateTxids = [
+      ...survivingTxids,
+      ...orphanedTxids.filter((txid) => !confirmedTxids.has(txid))
+    ];
+    const candidates: { txid: string; transaction: Transaction }[] = [];
+
+    // Reload candidates from storage so rebuild only replays transaction objects we still have.
+    for (const txid of candidateTxids) {
+      try {
+        const object = await this.objectStore.getObject(txid);
+        if (object.type === "transaction" && !("height" in object)) {
+          candidates.push({ txid, transaction: object });
+        }
+      } catch (error: unknown) {
+        if (!isMissingObjectStoreError(error)) {
+          throw error;
+        }
+      }
+    }
+
+    const newUtxo = await this.objectStore.getUtxo(newBlockId);
+    // Reset to confirmed chain state, then replay surviving/orphaned transactions that still fit.
+    this.mempool.rebuild(newUtxo, candidates);
+  }
+
   private async resetMiningBlock() {
     const chaintip = await this.objectStore.getChainTip();
     const currentBlock = await this.objectStore.getObject(chaintip);
@@ -701,292 +978,27 @@ export class MarabuNode {
 
   }
 
-
-
-
-
   /*//////////////////////////////////////////////////////////////
-                            NODE METHODS
+                            OUTBOUND PEER CONNECTIONS
   //////////////////////////////////////////////////////////////*/
 
-  // Starts peer discovery, begins listening, and schedules reconnect attempts.
-  async start(): Promise<void> {
-
-    // Leave early if the node is already running.
-    if (this.running) {
-      return;
-    }
-
-    // Load persisted peers before opening outbound connections.
-    await this.peerStore.load();
-
-    // Start the TCP server and fail startup if bind/listen errors occur.
-    await new Promise<void>((resolve, reject) => {
-      const onListening = (): void => {
-        this.server.off("error", onError);
-        resolve();
-      };
-
-      const onError = (error: Error): void => {
-        this.server.off("listening", onListening); // @q: why listen onerror?
-        reject(error);
-      };
-
-      this.server.once("listening", onListening);
-      this.server.once("error", onError);
-      this.server.listen(this.config.port, this.config.host);
-    });
-
-    const tipId = await this.objectStore.getChainTip();
-    const tipUtxo = await this.objectStore.getUtxo(tipId);
-    // The mempool is intentionally in-memory, so rebuild its base view on every boot.
-    this.mempool.initialize(tipUtxo);
-
-    this.running = true;
-    // Attempt immediate outbound dials instead of waiting for the first interval tick.
-    this.tryConnectDiscoveredPeers();
-
-    // Keep retrying known peers at a fixed interval.
-    this.reconnectTimer = setInterval(() => {
-      this.tryConnectDiscoveredPeers();
-    }, this.config.reconnectIntervalMs);
-
-
-    // Wait briefly to allow outbound peer connections, then ask for chain and mempool state.
-    setTimeout(() => {
-      this.sendGetChaintipToAllPeers();
-      this.sendGetMempoolToAllPeers();
-    }, 500); // 500ms delay; adjust as needed based on network conditions
-    
-  }
-
-  // Stops reconnect loops, tears down sockets, and closes the listening server.
-  async stop(): Promise<void> {
+  // Attempts outbound connections for all known peers not already connected.
+  private tryConnectDiscoveredPeers(): void {
     if (!this.running) {
       return;
     }
 
-    this.running = false;
-
-    if (this.reconnectTimer !== null) {
-      clearInterval(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    // Collect pending processing promises before destroying sockets so we can
-    // wait for in-flight handlers to settle before closing the object store.
-    const pendingProcessing = Array.from(this.connections.values()).flatMap(
-      (state) => Array.from(state.inFlightHandlers)
-    );
-
-    // Destroy all active sockets so in-flight handlers terminate promptly.
-    for (const socket of this.connections.keys()) {
-      socket.destroy();
-    }
-    this.connections.clear();
-    this.outboundSocketsByPeer.clear();
-    this.dialingPeers.clear();
-    this.rejectAllPendingObjectWaiters(new Error("Node is stopping"));
-
-    // Wait for any in-flight message handlers to finish before closing the
-    // object store; this prevents LevelDB errors on CI where disk I/O is slow.
-    await Promise.allSettled(pendingProcessing);
-
-    if (this.server.listening) {
-      // Wait for server close completion to ensure clean shutdown.
-      await new Promise<void>((resolve) => {
-        this.server.close(() => resolve());
-      });
-    }
-
-    await this.objectStore.close();
-  }
-
-  // Returns the effective bound port after startup (useful when binding to 0).
-  getListeningPort(): number {
-    const address = this.server.address();
-    if (address !== null && typeof address === "object") {
-      return address.port;
-    }
-
-    return this.config.port;
-  }
-
-  // Registers a new socket, wires event handlers, and kicks off handshake messages.
-  private handleConnectedSocket(
-    socket: net.Socket,
-    outbound: boolean,
-    outboundPeer: string | null = null
-  ): void {
-    // Create per-connection parsing and handshake state.
-    const state: ConnectionState = {
-      id: this.nextConnectionId,
-      buffer: "",
-      helloReceived: false,
-      outbound,
-      peerLabel: outboundPeer ?? this.describeSocket(socket),
-      inFlightHandlers: new Set()
-    };
-
-    this.nextConnectionId += 1;
-    this.connections.set(socket, state);
-
-    // Keep outbound-peer lookup in sync for dedupe and reconnect behavior.
-    if (outboundPeer !== null) {
-      this.outboundSocketsByPeer.set(outboundPeer, socket);
-    }
-
-    socket.setNoDelay(true);
-    socket.setKeepAlive(true);
-
-    // Accumulate stream data and parse line-delimited messages.
-    socket.on("data", (chunk) => {
-      const textChunk = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      try {
-        this.handleData(socket, textChunk);
-      } catch (error: unknown) {
-        this.handleConnectionFailure(socket, state, error);
-      }
-    });
-
-    socket.on("error", () => {});
-
-    socket.on("close", () => {
-      this.connections.delete(socket);
-      if (outboundPeer !== null) {
-        // Remove mapping only if it still points to this closed socket.
-        const mappedSocket = this.outboundSocketsByPeer.get(outboundPeer);
-        if (mappedSocket === socket) {
-          this.outboundSocketsByPeer.delete(outboundPeer);
-        }
-        this.dialingPeers.delete(outboundPeer);
-      }
-    });
-
-    // Begin protocol handshake immediately after connection setup.
-    this.sendMessage(socket, {
-      type: "hello",
-      version: this.config.version,
-      agent: this.config.agent
-    });
-    this.sendMessage(socket, {
-      type: "getpeers"
-    });
-  }
-
-  // Buffers stream chunks into complete protocol lines and dispatches messages.
-  private handleData(socket: net.Socket, chunk: string): void {
-    const state = this.connections.get(socket);
-    if (state === undefined || socket.destroyed) {
-      return;
-    }
-
-    state.buffer += chunk;
-
-    while (true) {
-      // Wait for a full newline-delimited frame before attempting decode.
-      const newlineIndex = state.buffer.indexOf("\n");
-      if (newlineIndex < 0) {
-        break;
-      }
-
-      let line = state.buffer.slice(0, newlineIndex);
-      state.buffer = state.buffer.slice(newlineIndex + 1);
-
-      if (line.endsWith("\r")) {
-        line = line.slice(0, -1);
-      }
-
-      if (line.trim() === "") {
+    const peers: string[] = this.peerStore.getPeers();
+    for (const peer of peers) {
+      // Skip peers already connected or currently in dial progress.
+      if (this.outboundSocketsByPeer.has(peer) || this.dialingPeers.has(peer)) {
         continue;
       }
 
-      let message: AnyMessage;
-      try {
-        // Parse and validate message shape before protocol dispatch.
-        message = decodeLine(line);
-      } catch (error) {
-        const description =
-          error instanceof MessageValidationError
-            ? error.message
-            : "Unable to parse incoming message";
-
-        logError(description)
-
-        this.sendErrorAndClose(socket, {
-          type: "error",
-          name: "INVALID_FORMAT",
-          description
-        });
-        return;
-      }
-
-      // Start the handler and let awaited work resume later without blocking this socket.
-      const handler = this.handleValidatedMessage(socket, state, message)
-        .then((keepConnection) => {
-          if (!keepConnection) {
-            return;
-          }
-        })
-        .catch((error: unknown) => {
-          this.handleConnectionFailure(socket, state, error);
-        })
-        .finally(() => {
-          state.inFlightHandlers.delete(handler);
-        });
-
-      state.inFlightHandlers.add(handler);
+      this.connectToPeer(peer);
     }
   }
 
-  // Reports an unexpected handler failure to the peer and records it in local logs.
-  private handleConnectionFailure(
-    socket: net.Socket,
-    state: ConnectionState,
-    error: unknown
-  ): void {
-    const description =
-      error instanceof Error ? error.message : "Unexpected connection error";
-    try {
-      this.sendErrorAndClose(socket, {
-        type: "error",
-        name: "INTERNAL_ERROR",
-        description
-      });
-    } catch (closeError) {
-      logError(
-        `[connection ${state.id}] close failed: ${
-          closeError instanceof Error ? closeError.message : String(closeError)
-        }`
-      );
-    }
-
-    logError(
-      `[connection ${state.id}] handleData failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
-
-  // Encodes and writes a protocol message unless the socket is already closed.
-  private sendMessage(socket: net.Socket, message: AnyMessage): void {
-    if (socket.destroyed || socket.writableEnded) {
-      return;
-    }
-
-    try {
-      socket.write(encodeMessage(message));
-    } catch {
-      // Hard-close broken sockets to avoid partial protocol state.
-      socket.destroy();
-    }
-  }
-  // Formats a socket's remote endpoint for logs and state labels.
-  private describeSocket(socket: net.Socket): string {
-    const host = socket.remoteAddress ?? "unknown-host";
-    const port = socket.remotePort ?? 0;
-    return `${host}:${port}`;
-  }
   // Dials a peer and wires timeout/error/connect handlers for lifecycle tracking.
   private async connectToPeer(peer: string): Promise<void> {
 
@@ -1060,6 +1072,24 @@ export class MarabuNode {
     }
   }
 
+  /*//////////////////////////////////////////////////////////////
+                            PROTOCOL SEND HELPERS
+  //////////////////////////////////////////////////////////////*/
+
+  // Encodes and writes a protocol message unless the socket is already closed.
+  private sendMessage(socket: net.Socket, message: AnyMessage): void {
+    if (socket.destroyed || socket.writableEnded) {
+      return;
+    }
+
+    try {
+      socket.write(encodeMessage(message));
+    } catch {
+      // Hard-close broken sockets to avoid partial protocol state.
+      socket.destroy();
+    }
+  }
+
   // Sends an error payload and closes the socket in a single operation.
   private sendErrorAndClose(socket: net.Socket, errorMessage: ErrorMessage): void {
     if (socket.destroyed || socket.writableEnded) {
@@ -1074,46 +1104,47 @@ export class MarabuNode {
     }
   }
 
-  // Attempts outbound connections for all known peers not already connected.
-  private tryConnectDiscoveredPeers(): void {
-    if (!this.running) {
-      return;
-    }
-
-    const peers: string[] = this.peerStore.getPeers();
-    for (const peer of peers) {
-      // Skip peers already connected or currently in dial progress.
-      if (this.outboundSocketsByPeer.has(peer) || this.dialingPeers.has(peer)) {
-        continue;
-      }
-
-      this.connectToPeer(peer);
+  // Sends an ihaveobject message to all connected peers
+  private sendIHaveObjectToAllPeers(objectId: string): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "ihaveobject",
+        objectid: objectId
+      });
     }
   }
 
+  // Sends getobject message to all connected peers
+  private sendGetObjectToAllPeers(objectId: string): void {
+    for (const socket of this.connections.keys()) {
+      this.sendGetObjectToPeer(socket, objectId);
+    }
+  }
 
-
-  /*//////////////////////////////////////////////////////////////
-                            CONSTRUCTOR
-  //////////////////////////////////////////////////////////////*/
-
-  // Initializes socket server listeners and shared runtime state.
-  constructor(
-    private readonly config: NodeConfig,
-    private readonly peerStore: PeerStore,
-    private readonly objectStore: ObjectStore
-  ) {
-    this.server = net.createServer();
-    // Track inbound sockets and route them through common connection handling.
-    this.server.on("connection", (socket) => {
-      const remote = `${socket.remoteAddress ?? "unknown"}:${socket.remotePort ?? 0}`;
-      log(`[inbound ${remote}] OK: connected`);
-      this.handleConnectedSocket(socket, false);
+  // Sends a getobject request to a connected peer.
+  private sendGetObjectToPeer(socket: net.Socket, objectId: string): void {
+    this.sendMessage(socket, {
+      type: "getobject",
+      objectid: objectId
     });
-    // Surface server-level failures for observability.
-    this.server.on("error", (error) => {
-      logError(`[server] ${error.message}`);
-    });
+  }
+
+  // Sends getChaintip message to all connected peers
+  private sendGetChaintipToAllPeers(): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "getchaintip"
+      });
+    }
+  }
+
+  // Sends a getmempool request to all connected peers.
+  private sendGetMempoolToAllPeers(): void {
+    for (const socket of this.connections.keys()) {
+      this.sendMessage(socket, {
+        type: "getmempool"
+      });
+    }
   }
 
 }
